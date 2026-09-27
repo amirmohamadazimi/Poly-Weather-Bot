@@ -1,0 +1,265 @@
+"""Database schema and helpers (SQLAlchemy Core: SQLite now, PostgreSQL later).
+
+Rows in forecast_snapshots, predictions and signals are insert-only, so every
+paper bet can be traced back to the exact data and rule results behind it.
+"""
+from __future__ import annotations
+
+import json
+from datetime import datetime, timezone
+
+from sqlalchemy import (
+    JSON, Boolean, Column, DateTime, Float, ForeignKey, Integer, MetaData, String, Table, Text,
+    create_engine, event, insert, select, update,
+)
+from sqlalchemy.engine import Engine
+
+metadata = MetaData()
+
+
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _ts(name: str = "created_at", **kw) -> Column:
+    return Column(name, DateTime(timezone=True), default=utcnow, nullable=False, **kw)
+
+
+system_events = Table(
+    "system_events", metadata,
+    Column("id", Integer, primary_key=True),
+    _ts("ts", index=True),
+    Column("level", String(10), nullable=False),
+    Column("component", String(40), nullable=False),
+    Column("message", Text, nullable=False),
+    Column("details", JSON),
+)
+
+bot_state = Table(  # small key/value store: last update times, loop status
+    "bot_state", metadata,
+    Column("key", String(60), primary_key=True),
+    Column("value", Text),
+    _ts("updated_at"),
+)
+
+weather_observations = Table(
+    "weather_observations", metadata,
+    Column("id", Integer, primary_key=True),
+    Column("station", String(10), nullable=False, index=True),
+    Column("local_date", String(10), nullable=False),
+    Column("kind", String(4), nullable=False),        # high | low
+    Column("value_c", Float, nullable=False),
+    Column("n_reports", Integer),
+    Column("source", String(40), nullable=False),
+    _ts("fetched_at"),
+)
+
+forecast_snapshots = Table(
+    "forecast_snapshots", metadata,
+    Column("id", Integer, primary_key=True),
+    _ts("fetched_at", index=True),
+    Column("source", String(40), nullable=False),
+    Column("station", String(10), nullable=False, index=True),
+    Column("local_date", String(10), nullable=False),
+    Column("kind", String(4), nullable=False),
+    Column("values_c", JSON, nullable=False),         # {model_name: value_c}
+    Column("request", JSON),                          # url + params used
+)
+
+markets = Table(
+    "markets", metadata,
+    Column("id", String(40), primary_key=True),       # Polymarket market id
+    Column("event_id", String(40), index=True),
+    Column("event_title", Text),
+    Column("event_slug", Text),
+    Column("question", Text),
+    Column("bucket_label", String(40)),
+    Column("city", String(60)),
+    Column("station", String(10)),
+    Column("kind", String(4)),
+    Column("local_date", String(10), index=True),
+    Column("unit", String(1)),
+    Column("bucket_lo", Float),                       # None = open-ended
+    Column("bucket_hi", Float),
+    Column("yes_token", Text),
+    Column("no_token", Text),
+    Column("end_date", DateTime(timezone=True)),
+    Column("resolution_source", Text),
+    Column("description", Text),
+    Column("tradeable", Boolean, default=False),      # parsed + station known
+    Column("skip_reason", Text),
+    Column("closed", Boolean, default=False),
+    Column("resolved_outcome", String(3)),            # YES | NO
+    _ts("first_seen"),
+    _ts("last_seen"),
+)
+
+market_snapshots = Table(
+    "market_snapshots", metadata,
+    Column("id", Integer, primary_key=True),
+    Column("market_id", String(40), ForeignKey("markets.id"), index=True),
+    _ts("ts"),
+    Column("best_bid", Float),
+    Column("best_ask", Float),
+    Column("last_price", Float),
+    Column("yes_price", Float),
+    Column("liquidity", Float),
+    Column("volume", Float),
+)
+
+predictions = Table(
+    "predictions", metadata,
+    Column("id", Integer, primary_key=True),
+    _ts("ts", index=True),
+    Column("market_id", String(40), ForeignKey("markets.id"), index=True),
+    Column("forecast_snapshot_id", Integer, ForeignKey("forecast_snapshots.id")),
+    Column("model_version", String(40), nullable=False),
+    Column("lead_days", Integer),
+    Column("mu_c", Float),
+    Column("sigma_c", Float),
+    Column("p_yes", Float, nullable=False),
+    Column("inputs", JSON),                           # everything the model used
+)
+
+signals = Table(
+    "signals", metadata,
+    Column("id", Integer, primary_key=True),
+    _ts("ts", index=True),
+    Column("prediction_id", Integer, ForeignKey("predictions.id"), index=True),
+    Column("market_id", String(40), ForeignKey("markets.id"), index=True),
+    Column("side", String(3)),                        # YES | NO (best side)
+    Column("model_prob", Float),
+    Column("market_prob", Float),                     # mid-implied prob of that side
+    Column("entry_price", Float),                     # fill price incl. slippage+fee
+    Column("edge", Float),
+    Column("ev_per_dollar", Float),
+    Column("confidence", Float),
+    Column("proposed_stake", Float),
+    Column("decision", String(10)),                   # BET | NO_BET
+    Column("reason", Text),
+    Column("rule_results", JSON),                     # [{rule, passed, value, threshold}]
+)
+
+paper_bets = Table(
+    "paper_bets", metadata,
+    Column("id", Integer, primary_key=True),
+    Column("signal_id", Integer, ForeignKey("signals.id"), unique=True),
+    Column("market_id", String(40), ForeignKey("markets.id"), index=True),
+    Column("event_id", String(40), index=True),
+    Column("side", String(3), nullable=False),
+    Column("token_id", Text),
+    _ts("opened_at"),
+    Column("market_prob", Float),
+    Column("model_prob", Float),
+    Column("edge", Float),
+    Column("ev_per_dollar", Float),
+    Column("confidence", Float),
+    Column("entry_price", Float, nullable=False),     # avg price per share paid
+    Column("shares", Float, nullable=False),
+    Column("stake", Float, nullable=False),           # dollars spent incl. fee
+    Column("fee", Float, default=0.0),
+    Column("fill", JSON),                             # order-book levels walked
+    Column("status", String(8), default="OPEN", index=True),  # OPEN | WON | LOST | VOID
+    Column("outcome", String(3)),
+    Column("settled_at", DateTime(timezone=True)),
+    Column("payout", Float),
+    Column("pnl", Float),
+    Column("bankroll_after", Float),
+    Column("mode", String(8), nullable=False, default="paper"),
+)
+
+market_resolutions = Table(
+    "market_resolutions", metadata,
+    Column("market_id", String(40), ForeignKey("markets.id"), primary_key=True),
+    _ts("resolved_at"),
+    Column("outcome", String(3), nullable=False),
+    Column("raw", JSON),
+)
+
+bankroll_snapshots = Table(
+    "bankroll_snapshots", metadata,
+    Column("id", Integer, primary_key=True),
+    _ts("ts", index=True),
+    Column("cash", Float, nullable=False),
+    Column("open_exposure", Float, nullable=False),   # stakes of open bets, at cost
+    Column("equity", Float, nullable=False),          # cash + open exposure
+    Column("realized_pnl", Float, nullable=False),
+    Column("reason", String(40)),
+)
+
+calibration_params = Table(
+    "calibration_params", metadata,
+    Column("id", Integer, primary_key=True),
+    _ts("fitted_at"),
+    Column("station", String(10), index=True),
+    Column("kind", String(4)),
+    Column("lead_days", Integer),
+    Column("bias_c", Float),                          # mean(forecast - observed)
+    Column("sigma_c", Float),
+    Column("n", Integer),
+    Column("window_start", String(10)),
+    Column("window_end", String(10)),
+    Column("backtest_run_id", Integer),
+)
+
+backtest_runs = Table(
+    "backtest_runs", metadata,
+    Column("id", Integer, primary_key=True),
+    _ts("started_at"),
+    Column("finished_at", DateTime(timezone=True)),
+    Column("params", JSON),
+    Column("report", JSON),
+)
+
+EXPORT_TABLES = [
+    "paper_bets", "signals", "predictions", "forecast_snapshots", "markets", "market_snapshots",
+    "market_resolutions", "bankroll_snapshots", "weather_observations", "calibration_params",
+    "backtest_runs", "system_events",
+]
+
+
+class Database:
+    def __init__(self, url: str):
+        kw = {"future": True}
+        if url.startswith("sqlite"):
+            kw["connect_args"] = {"check_same_thread": False, "timeout": 30}
+        self.engine: Engine = create_engine(url, **kw)
+        if url.startswith("sqlite"):
+            @event.listens_for(self.engine, "connect")
+            def _pragmas(conn, _):  # noqa: ANN001
+                cur = conn.cursor()
+                cur.execute("PRAGMA journal_mode=WAL")
+                cur.execute("PRAGMA foreign_keys=ON")
+                cur.close()
+        metadata.create_all(self.engine)
+
+    # -- tiny helpers -------------------------------------------------------
+    def insert(self, table: Table, **values) -> int:
+        with self.engine.begin() as conn:
+            res = conn.execute(insert(table).values(**values))
+            pk = res.inserted_primary_key
+            return pk[0] if pk else None
+
+    def rows(self, stmt) -> list[dict]:
+        with self.engine.connect() as conn:
+            return [dict(r._mapping) for r in conn.execute(stmt)]
+
+    def one(self, stmt) -> dict | None:
+        rows = self.rows(stmt)
+        return rows[0] if rows else None
+
+    def set_state(self, key: str, value) -> None:
+        text = value if isinstance(value, str) else json.dumps(value, default=str)
+        with self.engine.begin() as conn:
+            done = conn.execute(update(bot_state).where(bot_state.c.key == key)
+                                .values(value=text, updated_at=utcnow())).rowcount
+            if not done:
+                conn.execute(insert(bot_state).values(key=key, value=text, updated_at=utcnow()))
+
+    def get_state(self, key: str, default=None):
+        row = self.one(select(bot_state.c.value).where(bot_state.c.key == key))
+        return default if row is None else row["value"]
+
+    def log_event(self, level: str, component: str, message: str, details: dict | None = None) -> None:
+        self.insert(system_events, ts=utcnow(), level=level, component=component,
+                    message=message[:2000], details=details)

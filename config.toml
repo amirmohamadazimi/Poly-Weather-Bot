@@ -1,0 +1,74 @@
+# Polymarket weather paper-trading bot: configuration.
+#
+# Every value here can be overridden by an environment variable named
+# WXBOT_<SECTION>__<KEY>, for example WXBOT_STRATEGY__MIN_MODEL_PROB=0.85
+# or WXBOT_APP__DATABASE_URL=postgresql://user:pass@host/db.
+# Set WXBOT_CONFIG=/path/to/other.toml to use another file.
+
+[app]
+# "paper" is the only mode Phase 1 supports. See wxbot/execution/live.py.
+mode = "paper"
+database_url = "sqlite:///data/wxbot.sqlite3"
+host = "127.0.0.1"          # use 0.0.0.0 on a server / in Docker
+port = 8000
+log_level = "INFO"
+log_json = false            # true = one JSON object per log line (for servers)
+# Set (via WXBOT_APP__DASHBOARD_PASSWORD) to require HTTP basic auth on a server.
+dashboard_password = ""
+
+[schedule]
+cycle_minutes = 30          # full collect -> predict -> bet -> settle cycle
+observation_hours = 6       # how often station observations are pulled
+autostart = true            # start the autonomous loop when the app starts
+
+[bankroll]
+initial = 1000.0
+
+[markets]
+# Polymarket tag holding the daily city temperature markets.
+tag_slug = "daily-temperature"
+# Only these kinds are priced: "high" (Highest temperature ...) and "low".
+kinds = ["high", "low"]
+
+[weather]
+# Open-Meteo deterministic models averaged into the forecast. The same list is
+# used by the backtest so the calibration matches what trades.
+models = ["ecmwf_ifs025", "gfs_seamless", "icon_seamless", "gem_seamless", "jma_seamless"]
+min_models = 3              # data-quality: fewer models than this -> no trade
+max_forecast_age_minutes = 180
+
+[model]
+version = "normal-multimodel-v1"
+# Forecast error standard deviation in degC by lead day, used until the
+# backtest has fitted per-station values (see `python main.py backtest`).
+default_sigma_c = [1.4, 1.7, 2.1, 2.5, 3.0]
+# Never let the model claim more certainty than this for any single outcome.
+prob_floor = 0.01
+prob_ceiling = 0.99
+min_calibration_samples = 20
+
+[strategy]
+min_model_prob = 0.80       # confidence: model probability of the side we'd buy
+min_edge = 0.05             # model prob - entry price (after fees/slippage)
+min_ev_per_dollar = 0.04    # expected profit per $1 staked
+max_entry_price = 0.97      # nothing above this: too little upside
+min_entry_price = 0.03
+min_liquidity_usd = 300     # Polymarket-reported market liquidity
+min_lead_hours = 18         # hours from now to the END of the local target day
+max_lead_hours = 96
+max_sigma_c = 3.5           # skip when the forecast is too uncertain
+fee_rate = 0.0              # taker fee as a fraction of notional
+slippage = 0.005            # added to the order-book fill price
+
+[sizing]
+method = "fixed_fraction"   # or "fractional_kelly"
+fraction = 0.01             # fixed_fraction: 1% of bankroll per bet
+kelly_multiplier = 0.25     # fractional_kelly: quarter Kelly
+min_stake = 1.0
+max_book_share = 0.25       # take at most 25% of the visible ask depth
+
+[risk]
+max_bet_pct = 0.02          # of current bankroll
+max_open_exposure_pct = 0.30
+max_event_exposure_pct = 0.05   # all buckets of one city-day together
+daily_loss_limit_pct = 0.05     # 0 disables
