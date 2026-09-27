@@ -1,0 +1,13 @@
+services:
+  wxbot:
+    build: .
+    restart: unless-stopped          # comes back after crashes and reboots
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      WXBOT_APP__HOST: 0.0.0.0
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data             # SQLite database survives rebuilds
