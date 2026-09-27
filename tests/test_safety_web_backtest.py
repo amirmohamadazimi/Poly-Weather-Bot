@@ -115,3 +115,12 @@ def test_backtest_walk_forward_has_no_look_ahead():
         known = [e for e, (d, _, _) in zip(errors, rows) if d <= rows[i][0] - timedelta(days=3)]
         assert bias == pytest.approx(sum(known) / len(known))
         assert max(known) == i - 3
+
+
+def test_backtest_if_missing_skips_when_calibrated(cfg, monkeypatch, capsys):
+    import main
+    db = Database(cfg.app.database_url)
+    db.insert(calibration_params, station="EGLC", kind="high", lead_days=1, bias_c=0.0, sigma_c=1.5, n=60)
+    monkeypatch.setenv("WXBOT_APP__DATABASE_URL", cfg.app.database_url)
+    assert main.main(["backtest", "--if-missing"]) == 0   # would hit the network if it ran
+    assert "skipping backtest" in capsys.readouterr().out

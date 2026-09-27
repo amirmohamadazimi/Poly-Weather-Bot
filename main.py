@@ -5,6 +5,7 @@
     python main.py worker        # loop only (no dashboard)
     python main.py web           # dashboard only (reads the database)
     python main.py backtest      # walk-forward forecast backtest + fit calibration
+                                 #   (--if-missing: only when no calibration is stored yet)
     python main.py report        # print the performance report
     python main.py export DIR    # write every table as CSV (+ report.json) to DIR
 
@@ -39,6 +40,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", help="path to config.toml")
     parser.add_argument("--days", type=int, default=90, help="backtest window in days")
     parser.add_argument("--stations", help="backtest: comma-separated station codes (default: all enabled)")
+    parser.add_argument("--if-missing", action="store_true",
+                        help="backtest: skip when the database already holds fitted calibration")
     args = parser.parse_args(argv)
 
     cfg = load_config(args.config)
@@ -64,6 +67,10 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "backtest":
         from wxbot.backtest import run_backtest
+        from wxbot.db import calibration_params
+        if args.if_missing and db.one(calibration_params.select().limit(1)):
+            print("calibration already present; skipping backtest")
+            return 0
         from wxbot.data.weather import IEMObservations, OpenMeteoPreviousRuns
         stations = [s.strip().upper() for s in args.stations.split(",")] if args.stations else None
         rep = run_backtest(cfg, db, OpenMeteoPreviousRuns(list(cfg.weather.models)), IEMObservations(),

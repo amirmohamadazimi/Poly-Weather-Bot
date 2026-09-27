@@ -1,7 +1,11 @@
 """End-of-experiment performance report (markdown + JSON)."""
 from __future__ import annotations
 
-from wxbot.db import Database
+import json
+
+from sqlalchemy import desc, select
+
+from wxbot.db import Database, markets, paper_bets, system_events
 from wxbot.evaluation.metrics import overview, prediction_calibration
 
 
@@ -16,7 +20,25 @@ def _num(x, nd=4) -> str:
 def build_report(db: Database, initial: float) -> dict:
     ov = overview(db, initial)
     cal = prediction_calibration(db)
-    return {"overview": ov, "prediction_calibration": cal, "verdict": verdict(ov, cal)}
+    return {"overview": ov, "prediction_calibration": cal, "verdict": verdict(ov, cal),
+            "status": status(db), "bets": recent_bets(db)}
+
+
+def status(db: Database) -> dict:
+    last = db.get_state("last_cycle")
+    problems = db.rows(select(system_events.c.ts, system_events.c.level, system_events.c.component,
+                              system_events.c.message)
+                       .where(system_events.c.level.in_(["WARNING", "ERROR"]))
+                       .order_by(desc(system_events.c.id)).limit(10))
+    return {"last_cycle": json.loads(last) if last else None,
+            "markets_monitored": db.get_state("markets_monitored"), "recent_problems": problems}
+
+
+def recent_bets(db: Database, limit: int = 30) -> list[dict]:
+    b, mk = paper_bets.c, markets.c
+    return db.rows(select(b.id, b.opened_at, b.side, b.entry_price, b.model_prob, b.market_prob, b.edge,
+                          b.stake, b.status, b.pnl, mk.event_title, mk.bucket_label)
+                   .join(markets, mk.id == b.market_id).order_by(desc(b.id)).limit(limit))
 
 
 def verdict(ov: dict, cal: dict) -> list[str]:
@@ -70,4 +92,25 @@ def to_markdown(rep: dict) -> str:
         "| Predicted bin | n | Mean predicted | Observed |", "|---|---:|---:|---:|",
         *[f"| {b['bin']} | {b['n']} | {_pct(b['mean_pred'])} | {_pct(b['observed'])} |" for b in cal["bins"]],
     ]
+    bets = rep.get("bets") or []
+    if bets:
+        lines += ["", f"## Latest {len(bets)} bets", "",
+                  "| # | Opened (UTC) | Market | Side | Entry | Model | Market | Stake | Status | P/L |",
+                  "|---:|---|---|---|---:|---:|---:|---:|---|---:|"]
+        for b in bets:
+            pnl = "" if b["pnl"] is None else f"${b['pnl']:.2f}"
+            lines.append(f"| {b['id']} | {str(b['opened_at'])[:16]} | {b['event_title']} {b['bucket_label']} | "
+                         f"{b['side']} | {b['entry_price']:.3f} | {_pct(b['model_prob'])} | {_pct(b['market_prob'])} | "
+                         f"${b['stake']:.2f} | {b['status']} | {pnl} |")
+    st = rep.get("status")
+    if st:
+        last = st["last_cycle"] or {}
+        lines += ["", "## Bot status", "",
+                  f"Last cycle: {last.get('at', 'never')} · markets monitored: {st['markets_monitored'] or 0}", ""]
+        if last.get("summary"):
+            lines += ["```", json.dumps(last["summary"], indent=1, default=str), "```"]
+        if st["recent_problems"]:
+            lines += ["", "Recent warnings and errors:", ""]
+            lines += [f"- {str(p['ts'])[:16]} {p['level']} {p['component']}: {p['message'][:200]}"
+                      for p in st["recent_problems"]]
     return "\n".join(lines) + "\n"

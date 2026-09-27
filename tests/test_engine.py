@@ -127,3 +127,11 @@ def test_resolved_market_is_never_bet_again(cfg):
     eng.clock.now += timedelta(minutes=30)
     eng.run_cycle()
     assert len(eng.db.rows(select(paper_bets))) == 1
+
+
+def test_report_lists_bets_and_status(cfg):
+    eng = make_engine(cfg)
+    eng.run_cycle()
+    md = to_markdown(build_report(eng.db, 1000))
+    assert "## Latest 1 bets" in md and "Highest temperature in London" in md
+    assert "## Bot status" in md and "markets monitored: 11" in md

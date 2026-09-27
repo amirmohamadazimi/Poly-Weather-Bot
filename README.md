@@ -129,6 +129,37 @@ environment variable `WXBOT_<SECTION>__<KEY>`, e.g.
 `WXBOT_STRATEGY__MIN_MODEL_PROB=0.85`, `WXBOT_SCHEDULE__CYCLE_MINUTES=15`, or
 `WXBOT_CONFIG=/etc/wxbot.toml` for another file.
 
+## Running in the cloud for free (GitHub Actions)
+
+`.github/workflows/paper-trading.yml` runs one cycle every 3 hours on GitHub's
+servers, so no computer has to stay on. It starts once this workflow is on the
+default branch (`main`). To start immediately, open **Actions → paper-trading →
+Run workflow**.
+
+* **State:** the database is kept on the `paper-data` branch. Each run restores
+  it, runs `python main.py once`, and pushes it back as a single replacement
+  commit, so the repo does not grow. The very first run also fits calibration
+  (`backtest --if-missing`, about 10 minutes).
+* **Backups:** each run also uploads the database as a workflow artifact, kept for 14 days.
+* **Cost:** about 8 runs a day at about 6 minutes each comes to roughly 1,500
+  minutes a month, inside the 2,000 free minutes a private repo gets. Change
+  the `cron` line to run more or less often. Bets need 18 or more hours of lead
+  time, so 3 hours between runs loses very little.
+
+**Seeing results**
+
+* Quickest: open `REPORT.md` on the `paper-data` branch on GitHub (it works on
+  a phone). It shows bankroll, P/L, ROI, calibration, the latest 30 bets and
+  the bot's status, and is rewritten every run. The same report appears on each
+  run's summary page under Actions.
+* Full dashboard: download `wxbot.sqlite3` from the `paper-data` branch (open
+  the file on GitHub and click the download button), save it as
+  `data/wxbot.sqlite3` in your local copy, and run `python main.py web`.
+  `web` only reads the data and never trades, so it is safe while the
+  cloud bot keeps running. Or use `python main.py report` / `export`.
+* Do not run `python main.py` (the loop) on your own machine at the same time
+  unless you want a second, separate experiment.
+
 ## Running on a server (Phase 2)
 
 ```bash
