@@ -36,7 +36,7 @@ def test_env_overrides(tmp_path):
 def test_dashboard_api(cfg):
     eng = make_engine(cfg)
     eng.run_cycle()
-    client = TestClient(create_app(cfg, eng.db))
+    client = TestClient(create_app(cfg, eng.db, now=eng.clock))
     assert "Weather Paper Bot" in client.get("/").text
     ov = client.get("/api/overview").json()
     assert ov["mode"] == "PAPER TRADING" and ov["n_bets"] == 1 and ov["real_money"] == 0

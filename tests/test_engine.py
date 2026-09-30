@@ -133,5 +133,6 @@ def test_report_lists_bets_and_status(cfg):
     eng = make_engine(cfg)
     eng.run_cycle()
     md = to_markdown(build_report(eng.db, 1000))
-    assert "## Latest 1 bets" in md and "Highest temperature in London" in md
+    assert "## Results by market day" in md and "| 2026-09-28 | 1 | 0 | 0 | 1 |" in md
+    assert "### 2026-09-28" in md and "Highest temperature in London" in md
     assert "## Bot status" in md and "markets monitored: 11" in md
