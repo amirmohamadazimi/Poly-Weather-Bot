@@ -21,7 +21,7 @@ def build_report(db: Database, initial: float) -> dict:
     ov = overview(db, initial)
     cal = prediction_calibration(db)
     return {"overview": ov, "prediction_calibration": cal, "verdict": verdict(ov, cal),
-            "status": status(db), "bets": recent_bets(db)}
+            "status": status(db), "bets": all_bets(db)}
 
 
 def status(db: Database) -> dict:
@@ -34,11 +34,24 @@ def status(db: Database) -> dict:
             "markets_monitored": db.get_state("markets_monitored"), "recent_problems": problems}
 
 
-def recent_bets(db: Database, limit: int = 30) -> list[dict]:
+def all_bets(db: Database) -> list[dict]:
+    """Every bet ever placed, newest market day first."""
     b, mk = paper_bets.c, markets.c
     return db.rows(select(b.id, b.opened_at, b.side, b.entry_price, b.model_prob, b.market_prob, b.edge,
-                          b.stake, b.status, b.pnl, mk.event_title, mk.bucket_label)
-                   .join(markets, mk.id == b.market_id).order_by(desc(b.id)).limit(limit))
+                          b.stake, b.status, b.pnl, mk.event_title, mk.bucket_label, mk.local_date)
+                   .join(markets, mk.id == b.market_id).order_by(desc(mk.local_date), b.id))
+
+
+def by_day(bets: list[dict]) -> list[dict]:
+    days: dict[str, dict] = {}
+    for bet in bets:
+        d = days.setdefault(bet["local_date"], {"day": bet["local_date"], "bets": [], "won": 0, "lost": 0,
+                                                "open": 0, "staked": 0.0, "pnl": 0.0})
+        d["bets"].append(bet)
+        d["staked"] += bet["stake"]
+        d[{"WON": "won", "LOST": "lost"}.get(bet["status"], "open")] += 1
+        d["pnl"] += bet["pnl"] or 0.0
+    return list(days.values())
 
 
 def verdict(ov: dict, cal: dict) -> list[str]:
@@ -92,16 +105,23 @@ def to_markdown(rep: dict) -> str:
         "| Predicted bin | n | Mean predicted | Observed |", "|---|---:|---:|---:|",
         *[f"| {b['bin']} | {b['n']} | {_pct(b['mean_pred'])} | {_pct(b['observed'])} |" for b in cal["bins"]],
     ]
-    bets = rep.get("bets") or []
-    if bets:
-        lines += ["", f"## Latest {len(bets)} bets", "",
-                  "| # | Opened (UTC) | Market | Side | Entry | Model | Market | Stake | Status | P/L |",
-                  "|---:|---|---|---|---:|---:|---:|---:|---|---:|"]
-        for b in bets:
-            pnl = "" if b["pnl"] is None else f"${b['pnl']:.2f}"
-            lines.append(f"| {b['id']} | {str(b['opened_at'])[:16]} | {b['event_title']} {b['bucket_label']} | "
-                         f"{b['side']} | {b['entry_price']:.3f} | {_pct(b['model_prob'])} | {_pct(b['market_prob'])} | "
-                         f"${b['stake']:.2f} | {b['status']} | {pnl} |")
+    days = by_day(rep.get("bets") or [])
+    if days:
+        lines += ["", "## Results by market day", "",
+                  "| Market day | Bets | Won | Lost | Open | Staked | Settled P/L |",
+                  "|---|---:|---:|---:|---:|---:|---:|"]
+        lines += [f"| {d['day']} | {len(d['bets'])} | {d['won']} | {d['lost']} | {d['open']} | "
+                  f"${d['staked']:.2f} | ${d['pnl']:.2f} |" for d in days]
+        lines += ["", "## Every bet, by market day"]
+        for d in days:
+            lines += ["", f"### {d['day']}", "",
+                      "| # | Opened (UTC) | Market | Side | Entry | Model | Market | Stake | Status | P/L |",
+                      "|---:|---|---|---|---:|---:|---:|---:|---|---:|"]
+            for b in d["bets"]:
+                pnl = "" if b["pnl"] is None else f"${b['pnl']:.2f}"
+                lines.append(f"| {b['id']} | {str(b['opened_at'])[:16]} | {b['event_title']} {b['bucket_label']} | "
+                             f"{b['side']} | {b['entry_price']:.3f} | {_pct(b['model_prob'])} | "
+                             f"{_pct(b['market_prob'])} | ${b['stake']:.2f} | {b['status']} | {pnl} |")
     st = rep.get("status")
     if st:
         last = st["last_cycle"] or {}

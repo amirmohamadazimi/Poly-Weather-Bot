@@ -22,7 +22,7 @@ from wxbot.report import build_report, to_markdown
 TEMPLATE = Path(__file__).parent / "templates" / "index.html"
 
 
-def create_app(cfg, db: Database, runner=None) -> FastAPI:
+def create_app(cfg, db: Database, runner=None, now=utcnow) -> FastAPI:
     app = FastAPI(title="Polymarket weather paper-trading bot", docs_url="/api/docs")
     initial = cfg.bankroll.initial
     password = cfg.app.get("dashboard_password", "") or ""
@@ -51,7 +51,7 @@ def create_app(cfg, db: Database, runner=None) -> FastAPI:
     @app.get("/api/markets", dependencies=deps)
     def active_markets():
         mk, s, p = markets.c, signals.c, predictions.c
-        today = (utcnow() - timedelta(days=1)).date().isoformat()
+        today = (now() - timedelta(days=1)).date().isoformat()
         latest = (select(s.market_id, func.max(s.id).label("sid")).group_by(s.market_id).subquery())
         rows = db.rows(
             select(mk.id, mk.event_title, mk.event_slug, mk.question, mk.bucket_label, mk.station, mk.local_date,
