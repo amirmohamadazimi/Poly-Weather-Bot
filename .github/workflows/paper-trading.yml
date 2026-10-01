@@ -1,4 +1,8 @@
-# Runs the paper-trading bot in the cloud: one cycle every 3 hours.
+# Experiment 1 ($1,000, started 2026-09-27): one cycle every 3 hours.
+#
+# The code is pinned to the `exp1-frozen` branch (main as of 2026-09-30), so the
+# v2 work landing on main cannot change this experiment's model or rules while
+# it runs. Do not push to `exp1-frozen`.
 #
 # The SQLite database lives on the `paper-data` branch as wxbot.sqlite3.gz (a
 # single commit that is replaced each run, so the repo does not grow; gzipped
@@ -9,6 +13,9 @@
 #
 # PAPER TRADING ONLY: app.mode is forced to "paper" and no secrets are used.
 name: paper-trading
+
+env:
+  CODE_REF: exp1-frozen
 
 on:
   schedule:
@@ -36,6 +43,8 @@ jobs:
       WXBOT_APP__DATABASE_URL: sqlite:///${{ github.workspace }}/state/wxbot.sqlite3
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CODE_REF }}
 
       - uses: actions/setup-python@v5
         with:
