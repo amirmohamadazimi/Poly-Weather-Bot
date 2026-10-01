@@ -149,9 +149,9 @@ servers, so no computer has to stay on. It starts once this workflow is on the
 default branch (`main`). To start immediately, open **Actions → paper-trading →
 Run workflow**.
 
-* **State:** the database is kept on the `paper-data` branch. Each run restores
-  it, runs `python main.py once`, and pushes it back as a single replacement
-  commit, so the repo does not grow. The very first run also fits calibration
+* **State:** the database is kept, gzipped, on the `paper-data` branch. Each
+  run restores it, runs `python main.py once`, and pushes it back as a single
+  replacement commit, so the repo does not grow. The very first run also fits calibration
   (`backtest --if-missing`, about 10 minutes).
 * **Backups:** each run also uploads the database as a workflow artifact, kept for 14 days.
 * **Cost:** about 8 runs a day at about 6 minutes each comes to roughly 1,500
@@ -165,9 +165,11 @@ Run workflow**.
   a phone). It shows bankroll, P/L, ROI, calibration, results and every bet by
   market day, and the bot's status, and is rewritten every run. The same report appears on each
   run's summary page under Actions.
-* Full dashboard: download `wxbot.sqlite3` from the `paper-data` branch (open
-  the file on GitHub and click the download button), save it as
-  `data/wxbot.sqlite3` in your local copy, and run `python main.py web`.
+* Full dashboard: download `wxbot.sqlite3.gz` from the `paper-data` branch
+  (open the file on GitHub and click the download button), unzip it (`gunzip
+  wxbot.sqlite3.gz`, or 7-Zip on Windows), save it as `data/wxbot.sqlite3` in
+  your local copy, and run `python main.py web`. It is stored gzipped because
+  GitHub refuses files over 100 MB.
   `web` only reads the data and never trades, so it is safe while the
   cloud bot keeps running. Or use `python main.py report` / `export`.
 * Do not run `python main.py` (the loop) on your own machine at the same time
