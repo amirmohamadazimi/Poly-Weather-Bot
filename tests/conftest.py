@@ -28,21 +28,39 @@ NOAA_EGLC = "https://www.weather.gov/wrh/timeseries?site=EGLC"
 
 def market_description(extreme="highest", station="London City Airport", unit="Celsius", day="28 Sep '26",
                        source="NOAA", link=NOAA_EGLC) -> str:
-    """Polymarket's resolution wording (NOAA: 'recorded by NOAA at', Wunderground: 'recorded at')."""
-    by = "by NOAA " if source == "NOAA" else ""
+    """Polymarket's current resolution wording, built from the live NOAA and
+    Wunderground templates (verbatim copies are in tests/fixtures/)."""
     eg = "9°C" if unit == "Celsius" else "21°F"
+    no_data = ("In the event that there is no data for the observation date by 11:59 PM ET on the day following "
+               "the observation date, this market will resolve to the lowest bracket.\n\n")
+    timing = ("This market will resolve once the first data point for the following date has been published on "
+              "the resolution source, or by 11:59 PM ET on the day following the observation date, whichever "
+              "comes first.\n\n")
+    precision = (f"The resolution source for this market measures temperatures to whole degrees {unit} (eg, {eg}). "
+                 "Thus, this is the level of precision that will be used when resolving the market.")
+    if source == "NOAA":
+        return (
+            f"This market will resolve to the temperature range that contains the {extreme} temperature recorded "
+            f"by NOAA at the {station} Station in degrees {unit} on {day}.\n\n"
+            f"The resolution source for this market will be information from NOAA, specifically the {extreme} "
+            f'reading under the "Temp" column for all times on this day, available here: {link}\n\n'
+            "If NOAA data for the observation date is unavailable by 11:59 PM ET on the day following the "
+            "observation date, the Weather Underground Daily Observations table will be used as the resolution "
+            "source.\n\n" + no_data +
+            'To toggle between Fahrenheit and Celsius, click the "Switch to Metric Units" button until the '
+            "relevant table displays °C.\n\n" + timing + precision)
     return (
+        f"This market will resolve based on the {extreme} temperature recorded in the 'Daily Observations' table "
+        "on Weather Underground, not the figure displayed in the 'Day High & Low' summary section; in the event "
+        "of any discrepancy between the two, the Daily Observations table shall be the primary resolution source "
+        "not the Day High & Low section.\n\n"
         f"This market will resolve to the temperature range that contains the {extreme} temperature recorded "
-        f"{by}at the {station} Station in degrees {unit} on {day}.\n\n"
+        f"at the {station} Station in degrees {unit} on {day}.\n\n"
         f"The resolution source for this market will be information from {source}, specifically the {extreme} "
-        f"temperature recorded for all times on this day by the {station} Station once information is "
-        f"finalized, available here: {link}\n\n"
-        "This market can not resolve to \"Yes\" until all data for this date has been finalized. Any revisions "
-        "to temperatures recorded after data is finalized for this market's timeframe will not be considered "
-        "for this market's resolution.\n\n"
-        f"The resolution source for this market measures temperatures to whole degrees {unit} (eg, {eg}). "
-        "Thus, this is the level of precision that will be used when resolving the market."
-    )
+        f"temperature recorded for all times on this day for the {station} Station, available here: {link}.\n\n"
+        + no_data +
+        "To toggle between Fahrenheit and Celsius, click the gear icon next to the search bar and switch the "
+        "Temperature setting between °F and °C.\n\n" + timing + precision)
 
 
 def london_event() -> dict:
@@ -81,7 +99,9 @@ class FakePolymarket:
         self.resolved: dict[str, str] = {}
         self.book_requests: list[str] = []
         self.history_requests: list[tuple] = []
-        self.history_error: Exception | None = None
+        self.history_error: Exception | None = None             # every token
+        self.history_errors: dict[str, Exception] = {}          # one token
+        self.history_series: dict[str, list] = {}                # token -> [(t, p)], [] = empty
 
     def discover(self, kinds=None):
         return [parse_market(ev, mk, kinds) for ev in self.events for mk in ev["markets"]]
@@ -100,8 +120,10 @@ class FakePolymarket:
 
     def get_price_history(self, token_id, start, end, fidelity_min=60):
         self.history_requests.append((token_id, start, end))
-        if self.history_error:
-            raise self.history_error
+        if self.history_error or token_id in self.history_errors:
+            raise self.history_error or self.history_errors[token_id]
+        if token_id in self.history_series:
+            return self.history_series[token_id]
         return [(start + timedelta(hours=h), round(0.1 + h / 100, 4)) for h in range(3)]
 
     def get_asks(self, token_id):

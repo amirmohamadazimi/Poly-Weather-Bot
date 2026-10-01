@@ -130,23 +130,41 @@ market. A market is not traded when:
 * the resolution link is not a recognised source (NOAA/weather.gov,
   Wunderground, Hong Kong Observatory), or the text names a different source;
 * the text and the link name different station codes;
-* the rule sentence itself is not recognised.
+* the rule sentence itself is not recognised, or a second rule sentence (for
+  example an appended clarification) says something different.
 
 The reason is stored in `markets.skip_reason` (prefixed `resolution criteria:`)
 and the parsed rules in `markets.criteria`; the dashboard shows how many
-markets were skipped for this.
+markets were skipped for this. If Polymarket edits a market's text, the earlier
+version is kept in `market_criteria_history`.
+
+Checked against the 7,051 real markets in the running experiment's database
+(2026-10-01): all 4,070 that were tradeable stay tradeable, and 6,875 (97.5%)
+pass with no problem. The other 176 are all Hong Kong Observatory markets,
+which use a different rule sentence and one-decimal precision; that station was
+already disabled. `tests/fixtures/` holds verbatim copies of the live wordings
+the tests use.
 
 ### Market data kept for research
 
 Every cycle stores a snapshot (bid, ask, last trade, YES price, liquidity,
 volume) for every market seen, tradeable or not. `markets` keeps the outcomes,
 Polymarket's creation time, end and close time, resolution source, description,
-parsed criteria and the resolution result. After a market resolves, its full
-hourly YES price history is fetched once from the CLOB (`/prices-history`) into
-`market_price_history` for later backtests; a failed fetch is logged and
-retried next cycle (for up to 10 days) and never blocks settlement. Turn it
-off with `[markets] store_price_history = false`. A backtest using these prices
-must only read points with `t` at or before its decision time.
+parsed criteria and the resolution result. Results are fetched for every
+market, tradeable or not.
+
+After a market resolves, its hourly YES price history from creation to close
+is fetched once from the CLOB (`/prices-history`) into `market_price_history`
+for later backtests. Only points where the price changed are stored (a price
+holds until the next point). A fetch that fails or comes back empty is retried
+on later cycles, at most 3 times per market; if the CLOB cannot be reached at
+all, that cycle's pass stops and resumes next cycle. Either way settlement is
+never blocked. Each cycle fetches at most `max_price_histories_per_cycle`
+histories (newest markets first) and checks at most
+`max_result_checks_per_cycle` results for markets without a bet, so a backlog
+is worked off over several cycles. Turn price history off with `[markets]
+store_price_history = false`. A backtest using these prices must only read
+points with `t` at or before its decision time.
 
 ### Sizing and risk
 

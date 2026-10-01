@@ -29,9 +29,15 @@ initial = 1000.0
 tag_slug = "daily-temperature"
 # Only these kinds are priced: "high" (Highest temperature ...) and "low".
 kinds = ["high", "low"]
-# After a market resolves, store its full YES price history (one CLOB request)
+# After a market resolves, store its hourly YES price history (one CLOB request)
 # so later backtests can use the prices that were actually on offer.
 store_price_history = true
+# Per-cycle caps, so a backlog (e.g. after a pause) is worked off over several
+# cycles instead of thousands of requests in one: price histories (newest
+# markets first) and result checks for markets without a bet (oldest first;
+# markets with an open bet are always checked).
+max_price_histories_per_cycle = 300
+max_result_checks_per_cycle = 500
 
 [weather]
 # Open-Meteo deterministic models averaged into the forecast. The same list is

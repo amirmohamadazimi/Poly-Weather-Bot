@@ -37,8 +37,10 @@ RULE_DATE_RE = re.compile(
     r"(?:['’](?P<yy>\d{2})|(?P<yyyy>\d{4}))(?!\d)", re.I)
 SOURCE_FROM_RE = re.compile(r"information from (?:the )?(?P<src>[^,\n]+?)(?:,|\.(?:\s|$)| specifically)", re.I)
 PRECISION_RE = re.compile(r"measures temperatures to whole degrees (?P<unit>Celsius|Fahrenheit)", re.I)
-EXTREME_WORD_RE = re.compile(r"\b(highest|lowest) temperature\b", re.I)
+# NOAA wording says "specifically the highest reading under the "Temp" column"
+EXTREME_WORD_RE = re.compile(r"\b(highest|lowest) (?:temperature|reading)\b", re.I)
 UNIT_WORD_RE = re.compile(r"\bdegrees (Celsius|Fahrenheit)\b", re.I)
+FALLBACK_RE = re.compile(r"is unavailable[^.\n]*?, the (?P<src>[^.\n]+?) will be used as the resolution source", re.I)
 CRITERIA_SKIP = "resolution criteria: "  # skip_reason prefix when the market text disagrees
 URL_RE = re.compile(r"https?://[^\s)\]]+", re.I)
 BELOW_WORDS = ("or below", "or lower", "or less", "and below", "or under")
@@ -207,8 +209,13 @@ def parse_criteria(description: str, resolution_source: str) -> dict:
     """What the market text says it resolves on. Values are None when the text
     does not say; check_criteria() decides whether that is acceptable."""
     d = description or ""
-    rule = RULE_RE.search(d)
+    rules = list(RULE_RE.finditer(d))
+    rule = rules[0] if rules else None
     date_iso, date_text = _rule_date(rule.group("rest")) if rule else (None, None)
+    # a clarification can append a second rule sentence; it must say the same thing
+    variants = {(r.group("extreme").lower(), r.group("unit").lower(), r.group("station").strip().lower(),
+                 _rule_date(r.group("rest"))[0]) for r in rules}
+    fallback = FALLBACK_RE.search(d)
     precision = PRECISION_RE.search(d)
     links = [resolution_source] if resolution_source else URL_RE.findall(d)
     named = [rule.group("by")] if rule and rule.group("by") else []
@@ -217,6 +224,7 @@ def parse_criteria(description: str, resolution_source: str) -> dict:
              for rx in (WU_RE, NOAA_RE) for m in rx.finditer(text)}
     return {
         "rule_found": bool(rule),
+        "rules_agree": len(variants) <= 1,
         "extreme": {"highest": "high", "lowest": "low"}[rule.group("extreme").lower()] if rule else None,
         "unit": rule.group("unit")[0].upper() if rule else None,
         "station_name": rule.group("station").strip() if rule else None,
@@ -230,6 +238,8 @@ def parse_criteria(description: str, resolution_source: str) -> dict:
         "extremes_mentioned": sorted({w.lower() for w in EXTREME_WORD_RE.findall(d)}),
         "units_mentioned": sorted({w[0].upper() for w in UNIT_WORD_RE.findall(d)}),
         "no_data_rule": "lowest bracket" if "resolve to the lowest bracket" in d else None,
+        "fallback_source": (source_name(fallback.group("src")) or fallback.group("src").strip()) if fallback else None,
+        "hourly_only": "Show Hourly Data" in d,
     }
 
 
@@ -247,6 +257,8 @@ def check_criteria(c: dict, kind: str | None, unit: str | None, local_date: str 
             problems.append(f"text date not recognised: {c.get('date_text')!r}")
         elif c["date"] != local_date:
             problems.append(f"text date {c['date']}, title date {local_date}")
+        if not c.get("rules_agree", True):
+            problems.append("text has resolution rule sentences that disagree")
     if len(c.get("extremes_mentioned") or []) > 1:
         problems.append("text mentions both highest and lowest temperature")
     if len(c.get("units_mentioned") or []) > 1:

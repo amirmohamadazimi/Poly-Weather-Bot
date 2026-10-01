@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 
-from sqlalchemy import JSON, DateTime, Engine, inspect, text
+from sqlalchemy import JSON, DateTime, Engine, Integer, inspect, text
 
 log = logging.getLogger("wxbot.migrations")
 
@@ -22,6 +22,7 @@ ADDED_COLUMNS = [
     ("markets", "pm_created_at", DateTime(timezone=True)),           # v2 M3
     ("markets", "criteria", JSON()),                                 # v2 M3
     ("markets", "closed_time", DateTime(timezone=True)),             # v2 M3
+    ("markets", "price_history_tries", Integer()),                   # v2 M3
 ]
 
 

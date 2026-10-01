@@ -14,7 +14,8 @@ from types import SimpleNamespace
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import and_, desc, or_, select, update
+import requests
+from sqlalchemy import and_, desc, exists, func, or_, select, update
 
 from wxbot.data.polymarket import Bucket, ParsedMarket, parse_time, resolved_outcome
 from wxbot.data.stations import get_station
@@ -48,7 +49,9 @@ def _parse_time(value) -> datetime | None:
 
 
 VARIABLES = {"high": "temperature_2m_max", "low": "temperature_2m_min"}
-EMPTY_HISTORY_TRIES = 3  # resolved markets whose CLOB history comes back empty
+PRICE_HISTORY_TRIES = 3  # fetches per resolved market before its price history is given up
+# the CLOB itself is unreachable: stop this cycle's pass instead of trying every market
+CLOB_DOWN = (requests.ConnectionError, requests.Timeout, requests.exceptions.RetryError)
 
 
 class Engine:
@@ -118,19 +121,21 @@ class Engine:
             skip_reason=pm.skip_reason, closed=pm.closed, last_seen=now,
             outcomes=pm.outcomes, pm_created_at=pm.created_at, criteria=pm.criteria,
         )
-        mch = market_criteria_history.c
+        mk = markets.c
         with self.db.engine.begin() as conn:
-            # a market we already saw close/resolve never re-opens
-            upd = {**values, "closed": or_(markets.c.closed, pm.closed)}
-            if conn.execute(update(markets).where(markets.c.id == pm.id).values(**upd)).rowcount == 0:
+            old = conn.execute(select(mk.description, mk.resolution_source, mk.criteria, mk.last_seen)
+                               .where(mk.id == pm.id)).first()
+            if old is None:
                 conn.execute(markets.insert().values(id=pm.id, first_seen=now, **values))
-            # markets.criteria holds the latest text; keep every version the bot has seen
-            last = conn.execute(select(mch.description, mch.resolution_source).where(mch.market_id == pm.id)
-                                .order_by(desc(mch.id)).limit(1)).first()
-            if last is None or tuple(last) != (pm.description, pm.resolution_source):
+                return
+            if (old.description, old.resolution_source) != (pm.description, pm.resolution_source):
+                # Polymarket edited the rules: keep the text the market had until now
                 conn.execute(market_criteria_history.insert().values(
-                    market_id=pm.id, seen_at=now, description=pm.description,
-                    resolution_source=pm.resolution_source, criteria=pm.criteria))
+                    market_id=pm.id, replaced_at=now, last_seen=old.last_seen, description=old.description,
+                    resolution_source=old.resolution_source, criteria=old.criteria))
+                log.info("market %s: resolution text changed", pm.id)
+            # a market we already saw close/resolve never re-opens
+            conn.execute(update(markets).where(mk.id == pm.id).values({**values, "closed": or_(mk.closed, pm.closed)}))
 
     def _open_tradeable_markets(self) -> list[dict]:
         rows = self.db.rows(select(markets).where(markets.c.tradeable.is_(True), markets.c.closed.is_(False)))
@@ -319,11 +324,17 @@ class Engine:
         pb, mk = paper_bets.c, markets.c
         ids = {r["market_id"] for r in self.db.rows(select(pb.market_id).where(pb.status == "OPEN"))}
         cutoff = (now - timedelta(days=1)).date().isoformat()
-        for r in self.db.rows(select(mk.id).where(and_(mk.kind.is_not(None), mk.resolved_outcome.is_(None),
-                                                       mk.local_date <= cutoff, mk.local_date >= (now - timedelta(days=10)).date().isoformat()))):
-            ids.add(r["id"])
+        # markets without a bet, oldest first and capped, so a backlog is worked off over several cycles
+        rest = self.db.rows(select(mk.id).where(and_(
+            mk.kind.is_not(None), mk.resolved_outcome.is_(None), mk.local_date <= cutoff,
+            mk.local_date >= (now - timedelta(days=10)).date().isoformat(), mk.id.not_in(ids)))
+            .order_by(mk.local_date, mk.id))
+        cap = int(self.cfg.markets.get("max_result_checks_per_cycle", 500))
+        if len(rest) > cap:
+            self.db.log_event("INFO", "settlement", f"{len(rest) - cap} markets left for later cycles")
+        order = sorted(ids) + [r["id"] for r in rest[:cap]]
         settled = checked = 0
-        for market_id in sorted(ids):
+        for market_id in order:
             try:
                 raw = self.pm.get_market(market_id)
             except Exception as exc:
@@ -343,43 +354,63 @@ class Engine:
         return {"checked": checked, "bets_settled": settled, "price_histories": self._store_price_histories(now)}
 
     def _store_price_histories(self, now: datetime) -> int:
-        """Price series for recently resolved markets that do not have one yet.
-        A failed fetch stops this cycle's pass (the CLOB is likely down) and is
-        retried next cycle; an empty series is asked for at most EMPTY_HISTORY_TRIES times."""
+        """Price series for recently resolved markets that do not have one yet,
+        newest first and at most max_price_histories_per_cycle per cycle. Each
+        market is tried at most PRICE_HISTORY_TRIES times (empty series and errors
+        alike), so one bad market never blocks the others. If the CLOB itself is
+        unreachable the pass stops and resumes next cycle."""
         if not self.cfg.markets.get("store_price_history", True):
             return 0
         mk, ph = markets.c, market_price_history.c
-        have = select(ph.market_id).where(ph.market_id.is_not(None)).distinct()
-        todo = self.db.rows(select(mk.id).where(
-            mk.resolved_outcome.is_not(None), mk.yes_token.is_not(None), mk.id.not_in(have),
-            mk.local_date >= (now - timedelta(days=10)).date().isoformat()).order_by(mk.id))
+        todo = self.db.rows(select(mk.id, mk.price_history_tries).where(
+            mk.resolved_outcome.is_not(None), mk.yes_token.is_not(None),
+            func.coalesce(mk.price_history_tries, 0) < PRICE_HISTORY_TRIES,
+            ~exists().where(ph.market_id == mk.id),
+            mk.local_date >= (now - timedelta(days=10)).date().isoformat()).order_by(mk.local_date.desc(), mk.id))
+        cap = int(self.cfg.markets.get("max_price_histories_per_cycle", 300))
+        if len(todo) > cap:
+            self.db.log_event("INFO", "price_history", f"{len(todo) - cap} markets left for later cycles")
         stored = 0
-        for r in todo:
-            if int(self.db.get_state(f"price_history_empty:{r['id']}", 0)) >= EMPTY_HISTORY_TRIES:
-                continue
+        for r in todo[:cap]:
+            tries = (r["price_history_tries"] or 0) + 1
             try:
-                stored += self._store_price_history(r["id"], now)
+                got = self._store_price_history(r["id"], now)
             except Exception as exc:  # never let a history fetch break settlement
-                self.db.log_event("WARNING", "price_history", f"market {r['id']}: {type(exc).__name__}: {exc}")
-                break
+                got = None
+                self.db.log_event("WARNING", "price_history",
+                                  f"market {r['id']} (try {tries}): {type(exc).__name__}: {exc}")
+                if isinstance(exc, CLOB_DOWN):
+                    self._count_price_history_try(r["id"], tries)
+                    break
+            if got:
+                stored += 1
+                continue
+            self._count_price_history_try(r["id"], tries)
+            if got == 0:  # an empty series is normal for a market that never traded
+                self.db.log_event("WARNING" if tries >= PRICE_HISTORY_TRIES else "INFO", "price_history",
+                                  f"market {r['id']}: empty history (try {tries} of {PRICE_HISTORY_TRIES})")
         return stored
 
+    def _count_price_history_try(self, market_id: str, tries: int) -> None:
+        with self.db.engine.begin() as conn:
+            conn.execute(update(markets).where(markets.c.id == market_id).values(price_history_tries=tries))
+
     def _store_price_history(self, market_id: str, now: datetime) -> int:
-        """Keep the YES price series of one resolved market for backtests."""
+        """Keep the YES price series of one resolved market for backtests: hourly,
+        from creation to close, storing a point only when the price changed (a
+        price holds until the next stored point; the last point is always kept)."""
         m = self.db.one(select(markets).where(markets.c.id == market_id))
         if not m or not m["yes_token"]:
             return 0
         start = _parse_time(m["pm_created_at"]) or _parse_time(m["first_seen"]) - timedelta(days=3)
-        series = self.pm.get_price_history(m["yes_token"], start, now)
+        end = min(_parse_time(m["closed_time"]) or now, now)
+        series = self.pm.get_price_history(m["yes_token"], start, end)
         if not series:
-            key = f"price_history_empty:{market_id}"
-            tries = int(self.db.get_state(key, 0)) + 1
-            self.db.set_state(key, tries)
-            self.db.log_event("WARNING", "price_history", f"market {market_id}: empty history (try {tries})")
             return 0
+        kept = [pt for i, pt in enumerate(series) if i == 0 or pt[1] != series[i - 1][1] or i == len(series) - 1]
         with self.db.engine.begin() as conn:
             conn.execute(market_price_history.insert(), [
-                dict(market_id=market_id, token="YES", t=t, price=p, fetched_at=now) for t, p in series])
+                dict(market_id=market_id, token="YES", t=t, price=p, fetched_at=now) for t, p in kept])
         return 1
 
     # -- 5. observations ----------------------------------------------------

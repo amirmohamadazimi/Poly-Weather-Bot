@@ -69,7 +69,7 @@ forecast_snapshots = Table(
 )
 
 market_price_history = Table(  # CLOB traded-price series, stored once a market resolves
-    "market_price_history", metadata,
+    "market_price_history", metadata,          # a point only where the price changed: it holds until the next
     Column("id", Integer, primary_key=True),
     Column("market_id", String(40), ForeignKey("markets.id"), index=True),
     Column("token", String(3), nullable=False),        # YES
@@ -78,11 +78,12 @@ market_price_history = Table(  # CLOB traded-price series, stored once a market 
     _ts("fetched_at"),
 )
 
-market_criteria_history = Table(  # each market text seen, so edits to the rules mid-life are kept
-    "market_criteria_history", metadata,
+market_criteria_history = Table(  # earlier rules text of a market, written when Polymarket edits it
+    "market_criteria_history", metadata,          # (markets holds the current text)
     Column("id", Integer, primary_key=True),
     Column("market_id", String(40), ForeignKey("markets.id"), index=True),
-    _ts("seen_at"),
+    _ts("replaced_at"),                                # first seen with the new text
+    Column("last_seen", DateTime(timezone=True)),      # last seen with this text
     Column("description", Text),
     Column("resolution_source", Text),
     Column("criteria", JSON),                          # parse_criteria() output incl. problems
@@ -137,6 +138,7 @@ markets = Table(
     Column("pm_created_at", DateTime(timezone=True)),  # when Polymarket created the market
     Column("criteria", JSON),                         # parsed resolution rules + any mismatch found
     Column("closed_time", DateTime(timezone=True)),   # Polymarket closedTime, set at settlement
+    Column("price_history_tries", Integer),           # failed or empty price-history fetches so far
     _ts("first_seen"),
     _ts("last_seen"),
 )
