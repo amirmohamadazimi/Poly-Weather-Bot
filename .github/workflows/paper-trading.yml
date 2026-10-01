@@ -1,7 +1,8 @@
 # Runs the paper-trading bot in the cloud: one cycle every 3 hours.
 #
-# The SQLite database lives on the `paper-data` branch (a single commit that
-# is replaced each run, so the repo does not grow). Each run restores it,
+# The SQLite database lives on the `paper-data` branch as wxbot.sqlite3.gz (a
+# single commit that is replaced each run, so the repo does not grow; gzipped
+# because GitHub refuses files over 100 MB). Each run restores it,
 # runs one cycle, writes REPORT.md next to it, and pushes it back. Every run
 # also uploads the database as a workflow artifact as a backup, and shows the
 # report on the run's summary page.
@@ -48,6 +49,10 @@ jobs:
           mkdir -p "$STATE_DIR"
           if git fetch --depth=1 origin "$STATE_BRANCH"; then
             git archive FETCH_HEAD | tar -x -C "$STATE_DIR"
+            # saved gzipped; an older save holds the plain file, used as is
+            if [ -f "$STATE_DIR/wxbot.sqlite3.gz" ]; then
+              gunzip -f "$STATE_DIR/wxbot.sqlite3.gz"
+            fi
             echo "restored: $(ls -la "$STATE_DIR")"
           else
             echo "no $STATE_BRANCH branch yet: starting a fresh experiment"
@@ -77,6 +82,7 @@ jobs:
       - name: Save database to the paper-data branch
         run: |
           cd "$STATE_DIR"
+          gzip -9 -f wxbot.sqlite3      # about 7% of the plain size
           git init -q -b "$STATE_BRANCH"
           git config user.name "paper-trading-bot"
           git config user.email "paper-trading-bot@users.noreply.github.com"
