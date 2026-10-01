@@ -7,8 +7,9 @@ so the database records what was known at each moment.
 
 | Table | One row per | Key columns |
 |---|---|---|
-| `markets` | Polymarket market (one bucket) | id, event, question, description, station, kind (high/low), local_date, unit, bucket_lo/hi, tokens, end_date, tradeable/skip_reason, closed, resolved_outcome |
-| `market_snapshots` | market per cycle | best_bid, best_ask, last_price, yes_price, liquidity, volume, ts |
+| `markets` | Polymarket market (one bucket) | id, event, question, description, resolution_source, station, kind (high/low), local_date, unit, bucket_lo/hi, tokens, outcomes, pm_created_at (Polymarket creation time), end_date, closed_time (set at settlement), criteria (parsed resolution rules and any problems, see below), tradeable/skip_reason, closed, resolved_outcome |
+| `market_snapshots` | market per cycle (every market seen, tradeable or not) | best_bid, best_ask, last_price, yes_price, liquidity, volume, ts |
+| `market_price_history` | price point of a resolved market | market_id, token (YES), t, price, fetched_at; fetched once from CLOB `/prices-history` (hourly) after resolution |
 | `forecast_snapshots` | station × day × kind per fetch | source, values_c (per weather model, as fetched), request, fetched_at, issue_time (oldest model run used), quality (validation verdict: ok, rejected models and why, errors, warnings) |
 | `forecast_values` | model value per fetch | source, model, station, lat/lon, variable, target_date, issue_time and issue_time_source (model_run or unknown), horizon_hours, value, unit, valid, problem |
 | `weather_observations` | station × day × kind | value_c (observed high or low), n_reports, source |
@@ -21,6 +22,19 @@ so the database records what was known at each moment.
 | `backtest_runs` | backtest | params, report |
 | `system_events` | log event (info and up) | level, component, message, details |
 | `bot_state` | key | last cycle, markets monitored, loop status |
+
+`markets` is the one table that is updated in place: each discovery refreshes
+its descriptive fields, and a closed or resolved market never re-opens.
+
+`markets.criteria` holds what `parse_criteria` read from the description:
+`rule_found`, `extreme` (high/low), `unit`, `station_name`, `date`,
+`date_text`, `precision` and `precision_unit`, `primary_source` (from the
+link), `named_sources` (from the text), `station_codes`, `extremes_mentioned`,
+`units_mentioned`, `no_data_rule`, and `problems` (every mismatch found; empty
+when the market's text agrees with its title and bucket).
+
+`market_price_history` is fetched after the fact, so for any backtest only
+points with `t` at or before the decision time may be used.
 
 `python main.py export DIR` writes every table to CSV.
 

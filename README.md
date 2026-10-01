@@ -71,6 +71,8 @@ calibration (backtest) ─┘                                               (Pol
 1. **Discover** open `daily-temperature` events. The resolution station is read
    from the market's own resolution source (e.g. `wunderground.com/.../EGLC`);
    markets whose station is not in `wxbot/data/stations.py` are shown but never traded.
+   The resolution rules in the market text are checked too (see
+   [Resolution criteria](#resolution-criteria)).
 2. **Forecast** the station's daily max/min for its local calendar day from five
    Open-Meteo models (ECMWF, GFS, ICON, GEM, JMA).
 3. **Predict** with `normal-multimodel-v1`: a normal distribution centred on the
@@ -112,6 +114,40 @@ values that are not numbers, outside -70..60 °C, or from a model run more than
 `forecast_values` stores each model's value with its run time and horizon, so
 a backtest can see exactly what was known when.
 
+### Resolution criteria
+
+Each market's description states what it resolves on, for example
+"...contains the highest temperature recorded by NOAA at the London City
+Airport Station in degrees Celsius on 28 Sep '26" and "...measures temperatures
+to whole degrees Celsius". `parse_criteria` in `wxbot/data/polymarket.py` reads
+that text and `check_criteria` compares it with how the bot would price the
+market. A market is not traded when:
+
+* the text says highest and the title lowest (or the reverse), or mentions both;
+* the text's unit (Celsius/Fahrenheit) differs from the bucket's;
+* the text's date differs from the title's date, or cannot be read;
+* the precision is not stated as whole degrees of the bucket's unit;
+* the resolution link is not a recognised source (NOAA/weather.gov,
+  Wunderground, Hong Kong Observatory), or the text names a different source;
+* the text and the link name different station codes;
+* the rule sentence itself is not recognised.
+
+The reason is stored in `markets.skip_reason` (prefixed `resolution criteria:`)
+and the parsed rules in `markets.criteria`; the dashboard shows how many
+markets were skipped for this.
+
+### Market data kept for research
+
+Every cycle stores a snapshot (bid, ask, last trade, YES price, liquidity,
+volume) for every market seen, tradeable or not. `markets` keeps the outcomes,
+Polymarket's creation time, end and close time, resolution source, description,
+parsed criteria and the resolution result. After a market resolves, its full
+hourly YES price history is fetched once from the CLOB (`/prices-history`) into
+`market_price_history` for later backtests; a failed fetch is logged and
+retried next cycle (for up to 10 days) and never blocks settlement. Turn it
+off with `[markets] store_price_history = false`. A backtest using these prices
+must only read points with `t` at or before its decision time.
+
 ### Sizing and risk
 
 `fixed_fraction` (1% of equity) by default; `fractional_kelly` (quarter Kelly) is
@@ -132,8 +168,10 @@ The backtest scores the forecast model walk-forward: each day is priced with
 bias/sigma fitted only on observations available when that forecast was issued,
 using the forecasts each model actually issued 1–3 days ahead (Open-Meteo
 Previous Runs API) and METAR observations (Iowa Environmental Mesonet).
-Historical market prices are not replayed in v1, so the backtest measures
+Historical market prices are not replayed yet, so the backtest measures
 forecast skill and calibration; the paper run measures P/L at real prices.
+Resolved markets' price histories are now stored (`market_price_history`) so a
+market-price backtest can be added later.
 
 ## Configuration
 

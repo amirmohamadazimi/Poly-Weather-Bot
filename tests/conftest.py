@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -23,10 +23,31 @@ LONDON_PRICES = {
 }
 
 
+NOAA_EGLC = "https://www.weather.gov/wrh/timeseries?site=EGLC"
+
+
+def market_description(extreme="highest", station="London City Airport", unit="Celsius", day="28 Sep '26",
+                       source="NOAA", link=NOAA_EGLC) -> str:
+    """Polymarket's resolution wording (NOAA: 'recorded by NOAA at', Wunderground: 'recorded at')."""
+    by = "by NOAA " if source == "NOAA" else ""
+    eg = "9°C" if unit == "Celsius" else "21°F"
+    return (
+        f"This market will resolve to the temperature range that contains the {extreme} temperature recorded "
+        f"{by}at the {station} Station in degrees {unit} on {day}.\n\n"
+        f"The resolution source for this market will be information from {source}, specifically the {extreme} "
+        f"temperature recorded for all times on this day by the {station} Station once information is "
+        f"finalized, available here: {link}\n\n"
+        "This market can not resolve to \"Yes\" until all data for this date has been finalized. Any revisions "
+        "to temperatures recorded after data is finalized for this market's timeframe will not be considered "
+        "for this market's resolution.\n\n"
+        f"The resolution source for this market measures temperatures to whole degrees {unit} (eg, {eg}). "
+        "Thus, this is the level of precision that will be used when resolving the market."
+    )
+
+
 def london_event() -> dict:
     markets = []
     for i, (label, px) in enumerate(LONDON_PRICES.items()):
-        num = label.split("°")[0]
         markets.append({
             "id": str(1000 + i), "question": f"Will the highest temperature in London be {label} on September 28?",
             "groupItemTitle": label, "outcomes": json.dumps(["Yes", "No"]),
@@ -34,9 +55,9 @@ def london_event() -> dict:
             "clobTokenIds": json.dumps([f"y{1000 + i}", f"n{1000 + i}"]),
             "bestBid": round(px - 0.01, 4), "bestAsk": round(px + 0.01, 4), "lastTradePrice": px,
             "liquidityNum": 5000, "volumeNum": 12000, "closed": False, "endDate": "2026-09-28T12:00:00Z",
-            "resolutionSource": "https://www.wunderground.com/history/daily/gb/london/EGLC",
-            "description": f"This market will resolve to the temperature range that contains the highest "
-                           f"temperature recorded at the London City Airport Station in degrees Celsius on 28 Sep '26 ({num}).",
+            "createdAt": "2026-09-26T10:00:00Z",
+            "resolutionSource": NOAA_EGLC,
+            "description": market_description(),
         })
     return {"id": "ev1", "title": "Highest temperature in London on September 28?",
             "slug": "highest-temperature-in-london-on-september-28-2026", "endDate": "2026-09-28T12:00:00Z",
@@ -49,6 +70,8 @@ def unknown_event() -> dict:
     for m in ev["markets"]:
         m["id"] = "9" + m["id"]
         m["resolutionSource"] = "https://www.wunderground.com/history/daily/xx/atlantis/ZZZZ"
+        m["description"] = market_description(station="Atlantis Intl", source="Wunderground",
+                                              link=m["resolutionSource"])
     return ev
 
 
@@ -57,6 +80,8 @@ class FakePolymarket:
         self.events = events
         self.resolved: dict[str, str] = {}
         self.book_requests: list[str] = []
+        self.history_requests: list[tuple] = []
+        self.history_error: Exception | None = None
 
     def discover(self, kinds=None):
         return [parse_market(ev, mk, kinds) for ev in self.events for mk in ev["markets"]]
@@ -68,9 +93,16 @@ class FakePolymarket:
                     out = dict(mk)
                     if market_id in self.resolved:
                         out["closed"] = True
+                        out["closedTime"] = "2026-09-29 12:00:00+00"
                         out["outcomePrices"] = json.dumps(["1", "0"] if self.resolved[market_id] == "YES" else ["0", "1"])
                     return out
         raise KeyError(market_id)
+
+    def get_price_history(self, token_id, start, end, fidelity_min=60):
+        self.history_requests.append((token_id, start, end))
+        if self.history_error:
+            raise self.history_error
+        return [(start + timedelta(hours=h), round(0.1 + h / 100, 4)) for h in range(3)]
 
     def get_asks(self, token_id):
         self.book_requests.append(token_id)

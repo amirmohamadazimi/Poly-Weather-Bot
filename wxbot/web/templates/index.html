@@ -72,6 +72,7 @@
   <p class="muted">Latest prediction and signal for every monitored market. A signal only becomes a paper bet when every rule passes. Click a row to see why.</p>
   <div class="tablewrap"><table id="mktTbl"></table></div>
   <h2>Markets not traded</h2>
+  <p class="muted" id="skipCriteria"></p>
   <div class="tablewrap"><table id="skipTbl"></table></div>
 </section>
 
@@ -186,6 +187,7 @@ async function loadMarkets() {
     {h: "Signal", f: r => r.decision, c: r => r.decision}, {h: "Why", f: r => esc(r.reason)},
   ], d.markets, r => showSignal(r.signal_id));
   table($("#skipTbl"), [{h: "Reason", f: r => esc(r.skip_reason)}, {h: "Markets", n: 1, f: r => r.n}], d.skipped);
+  $("#skipCriteria").textContent = `${d.skipped_criteria} skipped because the resolution criteria in the market text did not match the title or bucket.`;
 }
 
 async function showSignal(id) {

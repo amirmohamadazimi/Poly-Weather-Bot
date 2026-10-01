@@ -16,12 +16,12 @@ from zoneinfo import ZoneInfo
 
 from sqlalchemy import and_, desc, or_, select, update
 
-from wxbot.data.polymarket import Bucket, ParsedMarket, resolved_outcome
+from wxbot.data.polymarket import Bucket, ParsedMarket, parse_time, resolved_outcome
 from wxbot.data.stations import get_station
 from wxbot.data.validation import validate_forecast, validate_observation
 from wxbot.db import (
-    Database, calibration_params, forecast_snapshots, forecast_values, market_snapshots, markets, paper_bets,
-    predictions, signals, utcnow, weather_observations,
+    Database, calibration_params, forecast_snapshots, forecast_values, market_price_history, market_snapshots,
+    markets, paper_bets, predictions, signals, utcnow, weather_observations,
 )
 from wxbot.execution import portfolio
 from wxbot.model.base import Calibration
@@ -97,10 +97,10 @@ class Engine:
         now = self.clock()
         for pm in parsed:
             self._upsert_market(pm, now)
-            if pm.tradeable:
-                self.db.insert(market_snapshots, market_id=pm.id, ts=now, best_bid=pm.best_bid,
-                               best_ask=pm.best_ask, last_price=pm.last_price, yes_price=pm.yes_price,
-                               liquidity=pm.liquidity, volume=pm.volume)
+            # every market, tradeable or not, so skipped ones can still be studied later
+            self.db.insert(market_snapshots, market_id=pm.id, ts=now, best_bid=pm.best_bid,
+                           best_ask=pm.best_ask, last_price=pm.last_price, yes_price=pm.yes_price,
+                           liquidity=pm.liquidity, volume=pm.volume)
         self.db.set_state("last_polymarket_update", now.isoformat())
         n_trade = sum(p.tradeable for p in parsed)
         self.db.set_state("markets_monitored", n_trade)
@@ -115,6 +115,7 @@ class Engine:
             yes_token=pm.yes_token, no_token=pm.no_token, end_date=pm.end_date,
             resolution_source=pm.resolution_source, description=pm.description, tradeable=pm.tradeable,
             skip_reason=pm.skip_reason, closed=pm.closed, last_seen=now,
+            outcomes=pm.outcomes, pm_created_at=pm.created_at, criteria=pm.criteria,
         )
         with self.db.engine.begin() as conn:
             # a market we already saw close/resolve never re-opens
@@ -321,13 +322,45 @@ class Engine:
             checked += 1
             outcome = resolved_outcome(raw)
             if raw.get("closed"):
+                closed_time = parse_time(raw.get("closedTime"))
                 with self.db.engine.begin() as conn:
-                    conn.execute(update(markets).where(mk.id == market_id).values(closed=True))
+                    conn.execute(update(markets).where(mk.id == market_id).values(
+                        closed=True, **({"closed_time": closed_time} if closed_time else {})))
             if outcome:
                 settled += len(self.broker.settle_market(market_id, outcome, {
                     "outcomePrices": raw.get("outcomePrices"), "umaResolutionStatus": raw.get("umaResolutionStatus"),
                     "closedTime": raw.get("closedTime")}))
-        return {"checked": checked, "bets_settled": settled}
+        return {"checked": checked, "bets_settled": settled, "price_histories": self._store_price_histories(now)}
+
+    def _store_price_histories(self, now: datetime) -> int:
+        """Price series for recently resolved markets that do not have one yet.
+        A failed fetch is retried next cycle, for as long as the market is in the window."""
+        if not self.cfg.markets.get("store_price_history", True):
+            return 0
+        mk, ph = markets.c, market_price_history.c
+        have = select(ph.market_id).where(ph.market_id.is_not(None)).distinct()
+        todo = self.db.rows(select(mk.id).where(
+            mk.tradeable.is_(True), mk.resolved_outcome.is_not(None), mk.id.not_in(have),
+            mk.local_date >= (now - timedelta(days=10)).date().isoformat()).order_by(mk.id))
+        return sum(self._store_price_history(r["id"], now) for r in todo)
+
+    def _store_price_history(self, market_id: str, now: datetime) -> int:
+        """Keep the YES price series of one resolved market for backtests."""
+        m = self.db.one(select(markets).where(markets.c.id == market_id))
+        if not m or not m["yes_token"]:
+            return 0
+        start = _parse_time(m["pm_created_at"]) or _parse_time(m["first_seen"]) - timedelta(days=3)
+        try:
+            series = self.pm.get_price_history(m["yes_token"], start, now)
+        except Exception as exc:  # never let a history fetch break settlement
+            self.db.log_event("WARNING", "price_history", f"market {market_id}: {type(exc).__name__}: {exc}")
+            return 0
+        if not series:
+            return 0
+        with self.db.engine.begin() as conn:
+            conn.execute(market_price_history.insert(), [
+                dict(market_id=market_id, token="YES", t=t, price=p, fetched_at=now) for t, p in series])
+        return 1
 
     # -- 5. observations ----------------------------------------------------
     def maybe_collect_observations(self, force: bool = False) -> dict:

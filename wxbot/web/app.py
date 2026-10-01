@@ -12,6 +12,7 @@ from fastapi.responses import HTMLResponse, PlainTextResponse, Response
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from sqlalchemy import desc, func, select
 
+from wxbot.data.polymarket import CRITERIA_SKIP
 from wxbot.db import (
     EXPORT_TABLES, Database, markets, paper_bets, predictions, signals, system_events, utcnow,
 )
@@ -64,7 +65,8 @@ def create_app(cfg, db: Database, runner=None, now=utcnow) -> FastAPI:
         skipped = db.rows(select(mk.skip_reason, func.count().label("n")).where(mk.tradeable.is_(False),
                                                                                  mk.closed.is_(False))
                           .group_by(mk.skip_reason))
-        return {"markets": rows, "skipped": skipped}
+        criteria = sum(r["n"] for r in skipped if (r["skip_reason"] or "").startswith(CRITERIA_SKIP))
+        return {"markets": rows, "skipped": skipped, "skipped_criteria": criteria}
 
     @app.get("/api/signals/{signal_id}", dependencies=deps)
     def signal_detail(signal_id: int):

@@ -115,7 +115,7 @@ def test_export_zip_contains_every_table(cfg):
     eng.run_cycle()
     zf = zipfile.ZipFile(io.BytesIO(export_zip_bytes(eng.db, build_report(eng.db, 1000))))
     names = set(zf.namelist())
-    assert {"paper_bets.csv", "signals.csv", "predictions.csv", "report.json"} <= names
+    assert {"paper_bets.csv", "signals.csv", "predictions.csv", "market_price_history.csv", "report.json"} <= names
     assert zf.read("paper_bets.csv").decode().count("\n") == 2
 
 

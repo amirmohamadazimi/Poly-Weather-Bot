@@ -18,6 +18,10 @@ log = logging.getLogger("wxbot.migrations")
 ADDED_COLUMNS = [
     ("forecast_snapshots", "issue_time", DateTime(timezone=True)),   # v2 M2
     ("forecast_snapshots", "quality", JSON()),                       # v2 M2
+    ("markets", "outcomes", JSON()),                                 # v2 M3
+    ("markets", "pm_created_at", DateTime(timezone=True)),           # v2 M3
+    ("markets", "criteria", JSON()),                                 # v2 M3
+    ("markets", "closed_time", DateTime(timezone=True)),             # v2 M3
 ]
 
 

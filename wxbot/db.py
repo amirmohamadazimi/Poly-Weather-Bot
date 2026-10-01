@@ -68,6 +68,16 @@ forecast_snapshots = Table(
     Column("quality", JSON),                          # validation result, see data/validation.py
 )
 
+market_price_history = Table(  # CLOB traded-price series, stored once a market resolves
+    "market_price_history", metadata,
+    Column("id", Integer, primary_key=True),
+    Column("market_id", String(40), ForeignKey("markets.id"), index=True),
+    Column("token", String(3), nullable=False),        # YES
+    Column("t", DateTime(timezone=True), nullable=False),
+    Column("price", Float, nullable=False),
+    _ts("fetched_at"),
+)
+
 forecast_values = Table(  # one row per model value: what each model said, from which run
     "forecast_values", metadata,
     Column("id", Integer, primary_key=True),
@@ -113,6 +123,10 @@ markets = Table(
     Column("skip_reason", Text),
     Column("closed", Boolean, default=False),
     Column("resolved_outcome", String(3)),            # YES | NO
+    Column("outcomes", JSON),                         # as listed by Polymarket, e.g. ["Yes", "No"]
+    Column("pm_created_at", DateTime(timezone=True)),  # when Polymarket created the market
+    Column("criteria", JSON),                         # parsed resolution rules + any mismatch found
+    Column("closed_time", DateTime(timezone=True)),   # Polymarket closedTime, set at settlement
     _ts("first_seen"),
     _ts("last_seen"),
 )
@@ -235,9 +249,9 @@ backtest_runs = Table(
 )
 
 EXPORT_TABLES = [
-    "paper_bets", "signals", "predictions", "forecast_snapshots", "markets", "market_snapshots",
-    "market_resolutions", "bankroll_snapshots", "weather_observations", "calibration_params",
-    "backtest_runs", "system_events",
+    "paper_bets", "signals", "predictions", "forecast_snapshots", "forecast_values", "markets",
+    "market_snapshots", "market_price_history", "market_resolutions", "bankroll_snapshots",
+    "weather_observations", "calibration_params", "backtest_runs", "system_events",
 ]
 
 
