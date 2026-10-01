@@ -109,7 +109,8 @@ def overview(db: Database, initial: float) -> dict:
     exp = current(db)
     return {
         "mode": "PAPER TRADING", "real_money": 0.0,
-        "experiment": exp and {k: exp[k] for k in ("name", "initial_bankroll", "started_at", "git_ref")},
+        "experiment": exp and {**{k: exp[k] for k in ("name", "initial_bankroll", "started_at", "git_ref")},
+                               "code_ref": db.get_state("code_ref")},
         "starting_bankroll": initial, "cash": bank.cash, "available_cash": bank.cash,
         "open_exposure": bank.open_exposure, "market_value": bank.market_value,
         "unrealized_pnl": bank.unrealized_pnl, "book_equity": bank.book_equity,

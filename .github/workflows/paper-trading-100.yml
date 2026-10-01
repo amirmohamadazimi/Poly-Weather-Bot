@@ -1,0 +1,102 @@
+# Experiment 2 ($100, 30 days): one cycle every 3 hours.
+#
+# Runs the code on main, so merged improvements reach it. Every run records the
+# commit it ran (GITHUB_SHA); the experiments table keeps the commit it started
+# on, and each change of code version is logged in system_events, so every
+# result can be tied to the code that produced it. The starting bankroll and
+# experiment name are pinned here, so a config change cannot alter them.
+#
+# The SQLite database lives on the `paper-data-100` branch as wxbot.sqlite3.gz
+# (a single commit that is replaced each run, so the repo does not grow). Each
+# run restores it, runs one cycle, writes REPORT.md next to it, and pushes it
+# back. Every run also uploads the database as a workflow artifact as a backup,
+# and shows the report on the run's summary page.
+#
+# PAPER TRADING ONLY: app.mode is forced to "paper" and no secrets are used.
+name: paper-trading-100
+
+on:
+  schedule:
+    - cron: "37 1-23/3 * * *"   # 01:37, 04:37, ... UTC, between experiment 1's runs
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: paper-trading-100      # never two runs at once; a queued run waits
+  cancel-in-progress: false
+
+jobs:
+  cycle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash               # -eo pipefail: a failed cycle fails the run
+    env:
+      WXBOT_APP__MODE: paper
+      WXBOT_BANKROLL__INITIAL: "100"
+      WXBOT_EXPERIMENT__NAME: exp2-100usd
+      STATE_BRANCH: paper-data-100
+      STATE_DIR: ${{ github.workspace }}/state
+      WXBOT_APP__DATABASE_URL: sqlite:///${{ github.workspace }}/state/wxbot.sqlite3
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Restore database from the paper-data-100 branch
+        run: |
+          mkdir -p "$STATE_DIR"
+          if git fetch --depth=1 origin "$STATE_BRANCH"; then
+            git archive FETCH_HEAD | tar -x -C "$STATE_DIR"
+            if [ -f "$STATE_DIR/wxbot.sqlite3.gz" ]; then
+              gunzip -f "$STATE_DIR/wxbot.sqlite3.gz"
+            fi
+            echo "restored: $(ls -la "$STATE_DIR")"
+          else
+            echo "no $STATE_BRANCH branch yet: starting a fresh experiment"
+          fi
+
+      - name: Load observation history for the climatology baseline (until it succeeds)
+        run: |
+          python main.py climatology --if-missing --years 3 \
+            || echo "::warning::observation history did not load; the next run tries again"
+
+      - name: Fit forecast calibration (first run only)
+        run: python main.py backtest --if-missing
+
+      - name: Run one paper-trading cycle
+        run: python main.py once | tee "$STATE_DIR/last_cycle.json"
+
+      - name: Write report
+        run: |
+          python main.py report > "$STATE_DIR/REPORT.md"
+          cat "$STATE_DIR/REPORT.md" >> "$GITHUB_STEP_SUMMARY"
+          # fold the SQLite write-ahead log into the main file before saving it
+          python -c "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute('PRAGMA wal_checkpoint(TRUNCATE)'); c.execute('PRAGMA journal_mode=DELETE'); c.close()" "$STATE_DIR/wxbot.sqlite3"
+          rm -f "$STATE_DIR"/wxbot.sqlite3-wal "$STATE_DIR"/wxbot.sqlite3-shm
+
+      - name: Upload database backup
+        uses: actions/upload-artifact@v4
+        with:
+          name: paper-data-100-${{ github.run_number }}
+          path: state/
+          retention-days: 14
+
+      - name: Save database to the paper-data-100 branch
+        run: |
+          cd "$STATE_DIR"
+          gzip -9 -f wxbot.sqlite3
+          git init -q -b "$STATE_BRANCH"
+          git config user.name "paper-trading-bot"
+          git config user.email "paper-trading-bot@users.noreply.github.com"
+          git add -A
+          git commit -q -m "Experiment 2 state after run ${{ github.run_number }} ($(date -u +%Y-%m-%dT%H:%MZ))"
+          git push -q -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" "$STATE_BRANCH"

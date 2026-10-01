@@ -330,6 +330,13 @@ Run workflow**.
 The scheduled workflow runs experiment 1 from the frozen `exp1-frozen`
 branch, not from `main`; see [docs/experiments.md](docs/experiments.md).
 
+`.github/workflows/paper-trading-100.yml` runs experiment 2 ($100) the same
+way from `main`, with its state on the `paper-data-100` branch and its runs
+offset from experiment 1's. Its first runs also load three years of observed
+highs and lows for the climatology baseline. GitHub fires scheduled runs about
+every 7–8 hours in practice, so the two experiments together use roughly 1,400
+of the 2,000 free minutes a month.
+
 ## Running on a server (Phase 2)
 
 ```bash

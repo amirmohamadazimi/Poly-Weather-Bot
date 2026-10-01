@@ -286,6 +286,17 @@ def test_history_load_survives_a_failed_year(cfg):
     assert eng.db.one(select(system_events).where(system_events.c.message.like("EGLC 2024-09-27%IEM timeout")))
 
 
+def test_history_load_that_fails_completely_is_retried_next_time(cfg):
+    eng = make_engine(cfg)
+    eng.observer = YearsOfObservations(fail_year_starting=2025)
+    assert load_history(eng, 1, date(2026, 9, 27), ["EGLC", "KLGA"]) == {
+        "EGLC": {"stored": 0, "failed_years": 1}, "KLGA": {"stored": 0, "failed_years": 1}}
+    assert eng.db.get_state("history_loaded_at") is None
+    eng.observer = YearsOfObservations()
+    load_history(eng, 1, date(2026, 9, 27), ["EGLC"])
+    assert eng.db.get_state("history_loaded_at")
+
+
 def test_climatology_cli_skips_when_history_is_loaded(cfg, tmp_path, monkeypatch, capsys):
     import main
     db = Database(cfg.app.database_url)

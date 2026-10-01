@@ -29,5 +29,10 @@ def load_history(engine, years: int, today: date, stations: list[str] | None = N
             end = start - timedelta(days=1)
         engine.db.log_event("INFO", "history", f"{code}: {stored} observed highs/lows stored, {failed} years failed")
         out[code] = {"stored": stored, "failed_years": failed}
+    if all(v["failed_years"] == years for v in out.values()) and out and years > 0:
+        # every request failed (e.g. the archive was down): leave it unmarked so
+        # `climatology --if-missing` tries again on the next run
+        engine.db.log_event("WARNING", "history", "no observation history could be loaded; will retry")
+        return out
     engine.db.set_state("history_loaded_at", engine.clock().isoformat())
     return out

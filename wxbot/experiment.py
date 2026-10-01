@@ -4,7 +4,9 @@ The first engine start on a database records the experiment's name, starting
 bankroll, start time, code version and settings in `experiments`. A database
 holds one experiment: starting it again with a different bankroll is refused,
 because the ledger's cash is computed from the starting bankroll and the
-results would silently change.
+results would silently change. When the code version changes between runs
+(an experiment that runs from main picks up merged changes), the change is
+logged, so every result can be tied to the code that produced it.
 """
 from __future__ import annotations
 
@@ -43,6 +45,18 @@ def current(db: Database) -> dict | None:
     return db.one(select(experiments).order_by(experiments.c.id).limit(1))
 
 
+def record_code_version(db: Database, env=None) -> str | None:
+    """Keep `code_ref` in bot_state current and log each change of code version."""
+    ref = git_ref(env)
+    prev = db.get_state("code_ref")
+    if ref and ref != prev:
+        db.set_state("code_ref", ref)
+        if prev:
+            db.log_event("INFO", "experiment", f"code version changed: {prev[:12]} -> {ref[:12]}",
+                         details={"from": prev, "to": ref})
+    return ref or prev
+
+
 def ensure_experiment(db: Database, cfg, now: datetime, env=None) -> dict:
     """The database's experiment, recorded on first use. A database that
     already has bankroll history (from before experiments were recorded)
@@ -61,4 +75,5 @@ def ensure_experiment(db: Database, cfg, now: datetime, env=None) -> dict:
         raise ValueError(f"this database holds experiment '{row['name']}', which started with "
                          f"${row['initial_bankroll']:,.2f}; the config says ${initial:,.2f}. "
                          "Use a new database for a new experiment.")
+    record_code_version(db, env)
     return row
