@@ -25,7 +25,11 @@ class Prediction:
 
 
 class Predictor(Protocol):
+    name: str
     version: str
+    calibration_version: str    # how its inputs are calibrated ("none" for baselines)
+    params: dict                # stored in the model registry
 
-    def predict(self, bucket: Bucket, kind: str, model_values_c: dict[str, float],
-                lead_days: int, calibration: Calibration) -> Prediction: ...
+    def predict(self, bucket: Bucket, kind: str, model_values_c: dict[str, float], lead_days: int,
+                calibration: Calibration, features=None) -> Prediction | None:
+        """`features` is a wxbot.features.Features; None means the model declines to predict."""

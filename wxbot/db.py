@@ -168,6 +168,22 @@ predictions = Table(
     Column("sigma_c", Float),
     Column("p_yes", Float, nullable=False),
     Column("inputs", JSON),                           # everything the model used
+    Column("role", String(12)),                       # production | shadow (None = before v2 M4: production)
+    Column("feature_set", String(20)),                # see wxbot/features.py
+)
+
+model_versions = Table(  # model registry: every model version the bot has run, and its current role
+    "model_versions", metadata,
+    Column("id", Integer, primary_key=True),
+    Column("name", String(40), nullable=False),
+    Column("version", String(40), nullable=False, unique=True),
+    Column("calibration_version", String(40)),
+    Column("feature_set", String(20)),
+    Column("params", JSON),
+    Column("role", String(12), nullable=False),        # production | shadow | retired
+    _ts("created_at"),
+    Column("role_changed_at", DateTime(timezone=True)),
+    Column("notes", Text),
 )
 
 signals = Table(
@@ -263,7 +279,7 @@ backtest_runs = Table(
 EXPORT_TABLES = [
     "paper_bets", "signals", "predictions", "forecast_snapshots", "forecast_values", "markets",
     "market_snapshots", "market_price_history", "market_criteria_history", "market_resolutions", "bankroll_snapshots",
-    "weather_observations", "calibration_params", "backtest_runs", "system_events",
+    "weather_observations", "calibration_params", "backtest_runs", "model_versions", "system_events",
 ]
 
 

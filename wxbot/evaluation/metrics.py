@@ -1,12 +1,20 @@
 """Performance and calibration metrics for the dashboard and the final report."""
 from __future__ import annotations
 
+import math
 import random
 import statistics
+from collections import defaultdict
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 
-from wxbot.db import Database, bankroll_snapshots, market_resolutions, markets, paper_bets, predictions, signals
+from wxbot.db import (
+    Database, bankroll_snapshots, market_resolutions, markets, model_versions, paper_bets, predictions, signals,
+)
+
+# rows from before v2 M4 have no role: they were all made by the production model
+PRODUCTION = or_(predictions.c.role.is_(None), predictions.c.role == "production")
+LOG_LOSS_EPS = 1e-3  # probabilities are clipped to [eps, 1 - eps] so one certain miss is not infinite
 
 
 def max_drawdown(equity: list[float]) -> tuple[float, float, list[float]]:
@@ -26,6 +34,13 @@ def brier(probs: list[float], outcomes: list[int]) -> float | None:
     if not probs:
         return None
     return statistics.fmean((p - o) ** 2 for p, o in zip(probs, outcomes))
+
+
+def log_loss(probs: list[float], outcomes: list[int]) -> float | None:
+    if not probs:
+        return None
+    clip = [min(1 - LOG_LOSS_EPS, max(LOG_LOSS_EPS, p)) for p in probs]
+    return statistics.fmean(-math.log(p) if o else -math.log(1 - p) for p, o in zip(clip, outcomes))
 
 
 def calibration_bins(probs: list[float], outcomes: list[int], n_bins: int = 10) -> list[dict]:
@@ -94,8 +109,7 @@ def prediction_calibration(db: Database, min_lead_days: int = 1) -> dict:
     """Calibration over ALL resolved markets (not only bets): the model's last
     prediction made at least `min_lead_days` ahead, versus what happened."""
     p, r = predictions.c, market_resolutions.c
-    latest = (select(func.max(p.id).label("pid")).join(market_resolutions, r.market_id == p.market_id)
-              .where(p.lead_days >= min_lead_days).group_by(p.market_id).subquery())
+    latest = decision_predictions(min_lead_days)
     rows = db.rows(select(p.p_yes, p.market_id, r.outcome).join(latest, latest.c.pid == p.id)
                    .join(market_resolutions, r.market_id == p.market_id))
     probs = [x["p_yes"] for x in rows]
@@ -108,10 +122,64 @@ def prediction_calibration(db: Database, min_lead_days: int = 1) -> dict:
             mk[x["market_id"]] = x["market_prob"] if x["side"] == "YES" else 1 - x["market_prob"]
     paired = [(mk[x["market_id"]], o) for x, o in zip(rows, outs) if x["market_id"] in mk]
     return {
-        "n": len(rows), "brier_model": brier(probs, outs),
+        "n": len(rows), "brier_model": brier(probs, outs), "log_loss_model": log_loss(probs, outs),
         "brier_market": brier([a for a, _ in paired], [o for _, o in paired]), "n_market": len(paired),
         "bins": calibration_bins(probs, outs),
     }
+
+
+def decision_predictions(min_lead_days: int = 1):
+    """Subquery: per resolved market, the id of the production model's last
+    prediction made at least `min_lead_days` before the target day."""
+    p, r = predictions.c, market_resolutions.c
+    return (select(func.max(p.id).label("pid")).join(market_resolutions, r.market_id == p.market_id)
+            .where(p.lead_days >= min_lead_days, PRODUCTION).group_by(p.market_id).subquery())
+
+
+def _scores(probs: dict[str, float], outcome: dict[str, int], ids) -> tuple:
+    ids = sorted(ids)
+    ps, os_ = [probs[i] for i in ids], [outcome[i] for i in ids]
+    return brier(ps, os_), log_loss(ps, os_)
+
+
+def model_comparison(db: Database, min_lead_days: int = 1) -> dict:
+    """Every model scored at the same moments. For each resolved market the
+    moment is the cycle of the production model's last prediction made at least
+    `min_lead_days` ahead; each model's prediction from that same cycle is used.
+    A model is compared with production (and the market price) on exactly the
+    markets it predicted, so the scores in one row are always like for like."""
+    p, r, s = predictions.c, market_resolutions.c, signals.c
+    latest = decision_predictions(min_lead_days)
+    moment = select(p.market_id, p.ts, p.id.label("pid")).join(latest, latest.c.pid == p.id).subquery()
+    rows = db.rows(select(p.id, p.market_id, p.model_version, p.role, p.p_yes, r.outcome)
+                   .join(moment, and_(moment.c.market_id == p.market_id, moment.c.ts == p.ts))
+                   .join(market_resolutions, r.market_id == p.market_id).order_by(p.id))
+    outcome: dict[str, int] = {}
+    production: dict[str, float] = {}
+    by_model: dict[str, dict[str, float]] = defaultdict(dict)
+    for x in rows:  # ordered by id, so a repeated cycle keeps its last prediction
+        outcome[x["market_id"]] = 1 if x["outcome"] == "YES" else 0
+        by_model[x["model_version"]][x["market_id"]] = x["p_yes"]
+        if x["role"] in (None, "production"):
+            production[x["market_id"]] = x["p_yes"]
+    market: dict[str, float] = {}
+    for x in db.rows(select(s.market_id, s.side, s.market_prob).join(moment, moment.c.pid == s.prediction_id)):
+        if x["market_prob"] is not None:
+            market[x["market_id"]] = x["market_prob"] if x["side"] == "YES" else 1 - x["market_prob"]
+    roles = {x["version"]: x["role"] for x in db.rows(select(model_versions.c.version, model_versions.c.role))}
+    out = []
+    for version, probs in sorted(by_model.items()):
+        ids = probs.keys() & production.keys()
+        b, ll = _scores(probs, outcome, ids)
+        pb, pll = _scores(production, outcome, ids)
+        out.append({"model": version, "role": roles.get(version, "production"), "n": len(ids),
+                    "brier": b, "log_loss": ll, "production_brier": pb, "production_log_loss": pll})
+    ids = market.keys() & production.keys()
+    b, ll = _scores(market, outcome, ids)
+    pb, pll = _scores(production, outcome, ids)
+    out.append({"model": "market price (mid)", "role": "benchmark", "n": len(ids), "brier": b, "log_loss": ll,
+                "production_brier": pb, "production_log_loss": pll})
+    return {"n_markets": len(outcome), "min_lead_days": min_lead_days, "models": out}
 
 
 def performance_series(db: Database, initial: float) -> dict:
@@ -135,6 +203,7 @@ def performance_series(db: Database, initial: float) -> dict:
         "bet_calibration": calibration_bins([b["model_prob"] for b in settled],
                                             [1 if b["status"] == "WON" else 0 for b in settled]),
         "prediction_calibration": prediction_calibration(db),
+        "model_comparison": model_comparison(db),
     }
 
 

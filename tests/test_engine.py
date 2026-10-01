@@ -44,7 +44,8 @@ def test_no_duplicate_bets_and_history_not_overwritten(cfg):
     eng.clock.now += timedelta(minutes=30)
     eng.run_cycle()
     assert len(eng.db.rows(select(paper_bets))) == 1
-    assert len(eng.db.rows(select(predictions))) == 22     # appended, never replaced
+    prod = eng.db.rows(select(predictions).where(predictions.c.role == "production"))
+    assert len(prod) == 22     # appended, never replaced
     last = eng.db.rows(select(signals).where(signals.c.market_id == TAIL_MARKET))[-1]
     assert "no_existing_position" in last["reason"]
 
@@ -99,7 +100,8 @@ def test_step_failure_is_logged_and_cycle_continues(cfg):
     eng = make_engine(cfg, forecast=Broken())
     summary = eng.run_cycle()
     assert summary["forecasts"]["snapshots"] == 0 and "seconds" in summary
-    assert "open-meteo down" in eng.db.rows(select(__import__("wxbot.db", fromlist=["x"]).system_events))[0]["message"]
+    events = eng.db.rows(select(__import__("wxbot.db", fromlist=["x"]).system_events))
+    assert any("open-meteo down" in e["message"] for e in events)
 
 
 def test_observations_stored_once(cfg):
