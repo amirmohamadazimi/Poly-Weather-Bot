@@ -64,6 +64,29 @@ forecast_snapshots = Table(
     Column("kind", String(4), nullable=False),
     Column("values_c", JSON, nullable=False),         # {model_name: value_c}
     Column("request", JSON),                          # url + params used
+    Column("issue_time", DateTime(timezone=True)),    # oldest model run used; None if unknown
+    Column("quality", JSON),                          # validation result, see data/validation.py
+)
+
+forecast_values = Table(  # one row per model value: what each model said, from which run
+    "forecast_values", metadata,
+    Column("id", Integer, primary_key=True),
+    Column("snapshot_id", Integer, ForeignKey("forecast_snapshots.id"), index=True),
+    Column("source", String(40), nullable=False),
+    Column("model", String(40), nullable=False),
+    Column("station", String(10), nullable=False, index=True),
+    Column("lat", Float),
+    Column("lon", Float),
+    Column("variable", String(30), nullable=False),     # temperature_2m_max | temperature_2m_min
+    Column("target_date", String(10), nullable=False),  # station-local calendar day
+    Column("issue_time", DateTime(timezone=True)),      # model run (initialisation) time, if known
+    Column("issue_time_source", String(20)),            # model_run | unknown
+    Column("horizon_hours", Float),                     # from issue (or fetch) time to the end of the target day
+    Column("value", Float),
+    Column("unit", String(1), nullable=False, default="C"),
+    Column("valid", Boolean, nullable=False),
+    Column("problem", String(60)),                      # why it was rejected, if not valid
+    _ts("fetched_at", index=True),
 )
 
 markets = Table(
@@ -232,6 +255,8 @@ class Database:
                 cur.execute("PRAGMA foreign_keys=ON")
                 cur.close()
         metadata.create_all(self.engine)
+        from wxbot.migrations import migrate
+        migrate(self.engine)
 
     # -- tiny helpers -------------------------------------------------------
     def insert(self, table: Table, **values) -> int:

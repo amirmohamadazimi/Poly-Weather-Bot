@@ -7,7 +7,8 @@ others, and a failure in one stage is logged and does not stop the rest.
 | Stage | Code | Writes |
 |---|---|---|
 | Market discovery | `wxbot/data/polymarket.py` (`PolymarketClient`, `parse_market`) | `markets`, `market_snapshots` |
-| Weather forecasts | `wxbot/data/weather.py` (`OpenMeteoForecast`) | `forecast_snapshots` |
+| Weather forecasts | `wxbot/data/weather.py` (`ForecastSource` interface, `OpenMeteoForecast`) | `forecast_snapshots`, `forecast_values` |
+| Data validation | `wxbot/data/validation.py` | `forecast_snapshots.quality`, `forecast_values.valid/problem` |
 | Prediction | `wxbot/model/` (`Predictor` interface, `NormalMultiModel`) | `predictions` |
 | Market pricing and signal | `wxbot/strategy/rules.py` (`simulate_fill`, `evaluate`) | `signals` |
 | Risk and sizing | `wxbot/strategy/sizing.py`, `wxbot/execution/portfolio.py` | `signals.proposed_stake`, `rule_results` |

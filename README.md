@@ -102,6 +102,16 @@ you reconstruct exactly why each bet was made. Click any row in the dashboard to
 | No existing position in that market | |
 | Daily realised loss | < 5% of starting bankroll |
 
+### Data validation
+
+Every forecast value is checked before use (`[validation]` in `config.toml`):
+values that are not numbers, outside -70..60 °C, or from a model run more than
+36 hours old are rejected and the reason is stored. If fewer than
+`min_models` values survive, the snapshot is marked invalid and the
+`data_validation` rule blocks any bet. Raw values are kept as fetched, and
+`forecast_values` stores each model's value with its run time and horizon, so
+a backtest can see exactly what was known when.
+
 ### Sizing and risk
 
 `fixed_fraction` (1% of equity) by default; `fractional_kelly` (quarter Kelly) is
