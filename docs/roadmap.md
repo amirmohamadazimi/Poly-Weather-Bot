@@ -59,7 +59,7 @@ Legend: **Have** = exists and is tested · **Partial** = exists but is missing w
 | 10 | Docker | Have | Compose service for the dashboard plus worker; small fixes only |
 | 11 | CI and tests | Partial | ruff, mypy, Docker build, coverage of new parts |
 | 12 | Server deployment | Partial | VPS guide plus tagged-release deploy; the Actions runner stays the default since there's no server |
-| 13 | 30-day experiment | Partial | Start the $100 run on Actions once M2–M6 are merged |
+| 13 | 30-day experiment | Partial | `paper-trading-100.yml` runs the $100 experiment from main (state on `paper-data-100`); it starts when that workflow is on main |
 | 14 | Research report | Partial | Full end-of-experiment report from section 17 |
 
 ## Notes

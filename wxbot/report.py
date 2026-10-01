@@ -89,7 +89,9 @@ def to_markdown(rep: dict) -> str:
         "# Paper-trading performance report", "",
         f"Mode: **{ov['mode']}** · real money used: **${ov['real_money']:.2f}**", "",
         *([f"Experiment: **{exp['name']}** · started {str(exp['started_at'])[:16]} UTC · starting bankroll "
-           f"${exp['initial_bankroll']:,.2f}" + (f" · code {exp['git_ref'][:12]}" if exp.get("git_ref") else ""), ""]
+           f"${exp['initial_bankroll']:,.2f}" + (f" · code {exp['git_ref'][:12]}" if exp.get("git_ref") else "")
+           + (f" (now {exp['code_ref'][:12]})" if exp.get("code_ref") and exp["code_ref"] != exp.get("git_ref")
+              else ""), ""]
           if exp else []),
         "## Verdict", "", *[f"- {n}" for n in rep["verdict"]], "",
         "## Results", "",

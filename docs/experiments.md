@@ -8,15 +8,25 @@
   to `main` do not alter its model or rules mid-run. Do not push to that branch.
 * State: `wxbot.sqlite3` and `REPORT.md` on the `paper-data` branch.
 
-## Experiment 2: $100, 30 days (planned)
+## Experiment 2: $100, 30 days
 
-Starts once the v2 milestones it needs (M2–M6 in [roadmap.md](roadmap.md)) are
-merged. It uses the defaults in `config.toml`: $100, 2% ($2) per bet, at least
-$1 a bet, and the exposure caps listed in the README. The first start records it
-in the `experiments` table (name, starting bankroll, start time, commit and
-settings), and REPORT.md names it. It will run from `main` with its own state branch. Its first run also
-loads observation history (`python main.py climatology --if-missing`) so the
-climatology baseline can be scored from day one.
+* Runs on GitHub Actions (`.github/workflows/paper-trading-100.yml`) every 3
+  hours, offset from experiment 1, from the code on `main`. It starts when that
+  workflow reaches `main` (or with **Actions → paper-trading-100 → Run workflow**).
+* Settings: the defaults in `config.toml` ($100, 2% or $2 per bet, at least $1
+  a bet, and the exposure caps listed in the README). The workflow pins the
+  starting bankroll and the name `exp2-100usd`.
+* Identity: the first run records the experiment in the `experiments` table
+  (name, starting bankroll, start time, commit, settings), and REPORT.md names
+  it. Because it runs from `main`, merged improvements reach it; each run
+  records its commit, every change of code version is logged in
+  `system_events`, and the report shows the commit it started on and the one
+  running now.
+* Its first run loads three years of observation history
+  (`python main.py climatology --if-missing`; retried on later runs if it
+  fails) so the climatology baseline is scored from day one, and fits the
+  forecast calibration (`backtest --if-missing`).
+* State: `wxbot.sqlite3.gz` and `REPORT.md` on the `paper-data-100` branch.
 
 ## Reproducing an experiment
 
