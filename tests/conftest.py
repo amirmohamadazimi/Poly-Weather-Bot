@@ -11,7 +11,7 @@ from wxbot.data.polymarket import BookLevel, parse_market
 from wxbot.db import Database
 from wxbot.engine import Engine
 from wxbot.execution.paper import make_broker
-from wxbot.model.normal import NormalMultiModel
+from wxbot.model.registry import production_model, shadow_models
 from wxbot.strategy.sizing import make_sizer
 
 NOW = datetime(2026, 9, 27, 6, 0, tzinfo=timezone.utc)
@@ -166,9 +166,9 @@ def cfg(tmp_path):
     return load_config(env={"WXBOT_APP__DATABASE_URL": f"sqlite:///{tmp_path / 'test.sqlite3'}"})
 
 
-def make_engine(cfg, db=None, pm=None, forecast=None, clock=None):
+def make_engine(cfg, db=None, pm=None, forecast=None, clock=None, shadows=None):
     db = db or Database(cfg.app.database_url)
     return Engine(cfg=cfg, db=db, polymarket=pm or FakePolymarket([london_event(), unknown_event()]),
                   forecaster=forecast or FakeForecast(), observer=FakeObservations(),
-                  predictor=NormalMultiModel(cfg.model.version, cfg.model.prob_floor, cfg.model.prob_ceiling),
-                  broker=make_broker(cfg, db), sizer=make_sizer(cfg), clock=clock or Clock())
+                  predictor=production_model(cfg), broker=make_broker(cfg, db), sizer=make_sizer(cfg),
+                  clock=clock or Clock(), shadows=shadow_models(cfg) if shadows is None else shadows)

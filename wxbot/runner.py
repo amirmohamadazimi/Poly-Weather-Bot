@@ -9,7 +9,7 @@ from wxbot.data.weather import IEMObservations, OpenMeteoForecast
 from wxbot.db import Database, utcnow
 from wxbot.engine import Engine
 from wxbot.execution.paper import make_broker
-from wxbot.model.normal import NormalMultiModel
+from wxbot.model.registry import production_model, shadow_models
 from wxbot.strategy.sizing import make_sizer
 
 log = logging.getLogger("wxbot.runner")
@@ -22,7 +22,8 @@ def build_engine(cfg, db: Database | None = None) -> Engine:
         polymarket=PolymarketClient(tag_slug=cfg.markets.tag_slug),
         forecaster=OpenMeteoForecast(list(cfg.weather.models)),
         observer=IEMObservations(),
-        predictor=NormalMultiModel(cfg.model.version, cfg.model.prob_floor, cfg.model.prob_ceiling),
+        predictor=production_model(cfg),
+        shadows=shadow_models(cfg),
         broker=make_broker(cfg, db),
         sizer=make_sizer(cfg),
     )

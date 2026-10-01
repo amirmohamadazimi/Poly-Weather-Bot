@@ -25,8 +25,10 @@ from wxbot.db import (
     market_snapshots, markets, paper_bets, predictions, signals, utcnow, weather_observations,
 )
 from wxbot.execution import portfolio
+from wxbot.features import FEATURE_SET, build_features, climatology_window, observed_history
 from wxbot.model.base import Calibration
 from wxbot.model.normal import default_calibration
+from wxbot.model.registry import sync_registry
 from wxbot.strategy import rules
 
 log = logging.getLogger("wxbot.engine")
@@ -49,6 +51,8 @@ def _parse_time(value) -> datetime | None:
 
 
 VARIABLES = {"high": "temperature_2m_max", "low": "temperature_2m_min"}
+# what a shadow prediction keeps of its model's inputs; the rest is on the production prediction
+SHADOW_INPUTS = ("raw_p_yes", "mu_unit", "sigma_unit", "n", "k", "window_days")
 PRICE_HISTORY_TRIES = 3  # fetches per resolved market before its price history is given up
 # the CLOB itself is unreachable: stop this cycle's pass instead of trying every market
 CLOB_DOWN = (requests.ConnectionError, requests.Timeout, requests.exceptions.RetryError)
@@ -56,18 +60,21 @@ CLOB_DOWN = (requests.ConnectionError, requests.Timeout, requests.exceptions.Ret
 
 class Engine:
     def __init__(self, cfg, db: Database, polymarket, forecaster, observer, predictor, broker, sizer,
-                 clock=utcnow):
+                 clock=utcnow, shadows=()):
         self.cfg = cfg
         self.db = db
         self.pm = polymarket
         self.forecaster = forecaster
         self.observer = observer
         self.predictor = predictor
+        self.shadows = list(shadows)  # priced and stored on every market, never traded
         self.broker = broker
         self.sizer = sizer
         self.clock = clock
         v = cfg.get("validation")
         self.validation = SimpleNamespace(**(v.as_dict() if v else {}), min_models=cfg.weather.min_models)
+        for change in sync_registry(db, predictor, self.shadows, self.clock()):
+            db.log_event("INFO", "model_registry", change)
 
     # -- orchestration ------------------------------------------------------
     def run_cycle(self) -> dict:
@@ -213,7 +220,10 @@ class Engine:
     # -- 3. predictions, signals, paper bets ---------------------------------
     def predict_and_trade(self) -> dict:
         now = self.clock()
-        n_pred = n_bets = 0
+        n_pred = n_shadow = n_bets = 0
+        history: dict[tuple, dict] = {}     # observed values per (station, kind), read once per cycle
+        features: dict[tuple, object] = {}  # per (station, day, kind, forecast)
+        shadow_errors: dict[str, str] = {}
         for m in self._open_tradeable_markets():
             st = get_station(m["station"])
             fc = self._latest_forecast(m["station"], m["local_date"], m["kind"])
@@ -226,20 +236,58 @@ class Engine:
             values = {k: v for k, v in fc["values_c"].items() if k not in quality.get("rejected", {})}
             if not values:
                 continue
-            pred = self.predictor.predict(bucket, m["kind"], values, lead_days, calib)
+            key = (m["station"], m["local_date"], m["kind"], fc["id"])
+            if key not in features:
+                features[key] = self._features(m, st, fc, values, lead_days, now, history)
+            feats = features[key]
+            pred = self.predictor.predict(bucket, m["kind"], values, lead_days, calib, feats)
             pred.inputs["data_quality"] = quality
             fetched_at = fc["fetched_at"] if fc["fetched_at"].tzinfo else fc["fetched_at"].replace(tzinfo=timezone.utc)
             pred.inputs["forecast_fetched_at"] = fetched_at.isoformat()
             pred.inputs["forecast_source"] = fc["source"]
+            pred.inputs["features"] = feats.values
             pred_id = self.db.insert(predictions, ts=now, market_id=m["id"], forecast_snapshot_id=fc["id"],
                                      model_version=pred.model_version, lead_days=lead_days, mu_c=pred.mu_c,
-                                     sigma_c=pred.sigma_c, p_yes=pred.p_yes, inputs=pred.inputs)
+                                     sigma_c=pred.sigma_c, p_yes=pred.p_yes, inputs=pred.inputs,
+                                     role="production", feature_set=FEATURE_SET)
             n_pred += 1
+            n_shadow += self._shadow_predictions(m, fc, bucket, values, lead_days, calib, feats, pred_id, now,
+                                                 shadow_errors)
             forecast_age = (now - fetched_at).total_seconds() / 60.0
             if self._signal(m, st, pred, pred_id, forecast_age, now):
                 n_bets += 1
+        for version, err in shadow_errors.items():
+            self.db.log_event("WARNING", "shadow_model", f"{version}: {err}")
         self.db.set_state("last_prediction_time", now.isoformat())
-        return {"predictions": n_pred, "bets": n_bets}
+        return {"predictions": n_pred, "shadow_predictions": n_shadow, "bets": n_bets}
+
+    def _features(self, m: dict, st, fc: dict, values: dict, lead_days: int, now: datetime, history: dict):
+        hkey = (m["station"], m["kind"])
+        if hkey not in history:
+            history[hkey] = observed_history(self.db, m["station"], m["kind"], now)
+        window = int(self.cfg.model.get("climatology_window_days", 7))
+        day_end = now + timedelta(hours=hours_to_day_end(m["local_date"], st.tz, now))
+        return build_features(station=m["station"], kind=m["kind"], local_date=m["local_date"], values_c=values,
+                              lead_days=lead_days, issue_time=_parse_time(fc.get("issue_time")), day_end=day_end,
+                              climatology_c=climatology_window(history[hkey], m["local_date"], window))
+
+    def _shadow_predictions(self, m, fc, bucket, values, lead_days, calib, feats, pred_id, now, errors) -> int:
+        """Baselines on the same inputs. Stored for scoring only: never a signal or a bet."""
+        n = 0
+        for model in self.shadows:
+            try:
+                sp = model.predict(bucket, m["kind"], values, lead_days, calib, feats)
+            except Exception as exc:  # a broken baseline never stops the production model
+                errors[model.version] = f"{type(exc).__name__}: {exc}"
+                continue
+            if sp is None:
+                continue
+            inputs = {"production_prediction_id": pred_id, **{k: sp.inputs[k] for k in SHADOW_INPUTS if k in sp.inputs}}
+            self.db.insert(predictions, ts=now, market_id=m["id"], forecast_snapshot_id=fc["id"],
+                           model_version=sp.model_version, lead_days=lead_days, mu_c=sp.mu_c, sigma_c=sp.sigma_c,
+                           p_yes=sp.p_yes, inputs=inputs, role="shadow", feature_set=FEATURE_SET)
+            n += 1
+        return n
 
     def _latest_snapshot(self, market_id: str) -> dict | None:
         ms = market_snapshots.c
@@ -435,15 +483,18 @@ class Engine:
         self.db.set_state("last_observation_update", now.isoformat())
         return {"stations": len(codes), "new_rows": stored}
 
-    def store_observations(self, code: str, obs: dict) -> int:
+    def store_observations(self, code: str, obs: dict, quiet: bool = False) -> int:
+        """Append observed highs/lows that are new or changed; `quiet` skips the
+        per-day warning for rejected days (history loads log one summary)."""
         wo = weather_observations.c
         stored = 0
         for kind, days in obs.items():
             for d, (value, n) in days.items():
                 problem = validate_observation(value, n, self.validation)
                 if problem:
-                    self.db.log_event("WARNING", "validation", f"observation {code} {d} {kind} rejected: {problem}",
-                                      details={"value_c": value, "n_reports": n})
+                    if not quiet:
+                        self.db.log_event("WARNING", "validation", f"observation {code} {d} {kind} rejected: "
+                                          f"{problem}", details={"value_c": value, "n_reports": n})
                     continue
                 prev = self.db.one(select(wo.value_c).where(wo.station == code, wo.local_date == d, wo.kind == kind,
                                                             wo.source == self.observer.source).order_by(desc(wo.id)).limit(1))

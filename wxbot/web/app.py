@@ -14,7 +14,7 @@ from sqlalchemy import desc, func, or_, select
 
 from wxbot.data.polymarket import CRITERIA_SKIP
 from wxbot.db import (
-    EXPORT_TABLES, Database, markets, paper_bets, predictions, signals, system_events, utcnow,
+    EXPORT_TABLES, Database, markets, model_versions, paper_bets, predictions, signals, system_events, utcnow,
 )
 from wxbot.evaluation import metrics
 from wxbot.export import export_zip_bytes, table_csv
@@ -88,6 +88,10 @@ def create_app(cfg, db: Database, runner=None, now=utcnow) -> FastAPI:
     @app.get("/api/performance", dependencies=deps)
     def performance():
         return metrics.performance_series(db, initial)
+
+    @app.get("/api/models", dependencies=deps)
+    def models():
+        return db.rows(select(model_versions).order_by(model_versions.c.id))
 
     @app.get("/api/status", dependencies=deps)
     def status():

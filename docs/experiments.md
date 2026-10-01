@@ -11,7 +11,9 @@
 ## Experiment 2: $100, 30 days (planned)
 
 Starts once the v2 milestones it needs (M2–M6 in [roadmap.md](roadmap.md)) are
-merged. It will run from `main` with its own state branch.
+merged. It will run from `main` with its own state branch. Its first run also
+loads observation history (`python main.py climatology --if-missing`) so the
+climatology baseline can be scored from day one.
 
 ## Reproducing an experiment
 

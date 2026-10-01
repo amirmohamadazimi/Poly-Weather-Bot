@@ -14,6 +14,9 @@ from wxbot.data.polymarket import Bucket
 from wxbot.model.base import Calibration, Prediction
 
 
+MIN_SIGMA_C = 0.3
+
+
 def norm_cdf(x: float) -> float:
     return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
 
@@ -35,11 +38,15 @@ def default_calibration(default_sigma_c: list[float], lead_days: int) -> Calibra
 
 
 class NormalMultiModel:
+    name = "normal-multimodel"
+    calibration_version = "station-bias-sigma-v1"  # per station/kind/lead bias and sigma from `backtest`
+
     def __init__(self, version: str = "normal-multimodel-v1", prob_floor: float = 0.01,
                  prob_ceiling: float = 0.99):
         self.version = version
         self.prob_floor = prob_floor
         self.prob_ceiling = prob_ceiling
+        self.params = {"prob_floor": prob_floor, "prob_ceiling": prob_ceiling, "min_sigma_c": MIN_SIGMA_C}
 
     @staticmethod
     def combine(model_values_c: dict[str, float]) -> tuple[float, float]:
@@ -49,12 +56,12 @@ class NormalMultiModel:
         return mean, spread
 
     def predict(self, bucket: Bucket, kind: str, model_values_c: dict[str, float],
-                lead_days: int, calibration: Calibration) -> Prediction:
+                lead_days: int, calibration: Calibration, features=None) -> Prediction:
         if not model_values_c:
             raise ValueError("no model values")
         raw_mean, spread = self.combine(model_values_c)
         mu_c = raw_mean - calibration.bias_c
-        sigma_c = max(calibration.sigma_c, spread, 0.3)
+        sigma_c = max(calibration.sigma_c, spread, MIN_SIGMA_C)
         scale = 9.0 / 5.0 if bucket.unit == "F" else 1.0
         mu_u = c_to_unit(mu_c, bucket.unit)
         sigma_u = sigma_c * scale

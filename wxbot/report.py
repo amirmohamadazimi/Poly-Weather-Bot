@@ -6,7 +6,7 @@ import json
 from sqlalchemy import desc, select
 
 from wxbot.db import Database, markets, paper_bets, system_events
-from wxbot.evaluation.metrics import overview, prediction_calibration
+from wxbot.evaluation.metrics import model_comparison, overview, prediction_calibration
 
 
 def _pct(x) -> str:
@@ -20,7 +20,8 @@ def _num(x, nd=4) -> str:
 def build_report(db: Database, initial: float) -> dict:
     ov = overview(db, initial)
     cal = prediction_calibration(db)
-    return {"overview": ov, "prediction_calibration": cal, "verdict": verdict(ov, cal),
+    return {"overview": ov, "prediction_calibration": cal, "model_comparison": model_comparison(db),
+            "verdict": verdict(ov, cal),
             "status": status(db), "bets": all_bets(db)}
 
 
@@ -105,6 +106,17 @@ def to_markdown(rep: dict) -> str:
         "| Predicted bin | n | Mean predicted | Observed |", "|---|---:|---:|---:|",
         *[f"| {b['bin']} | {b['n']} | {_pct(b['mean_pred'])} | {_pct(b['observed'])} |" for b in cal["bins"]],
     ]
+    comp = rep.get("model_comparison")
+    if comp:
+        lines += ["", "## Model comparison", "",
+                  f"Each model's prediction from the same cycle as the production model's last prediction made "
+                  f"{comp['min_lead_days']}+ day ahead, on {comp['n_markets']} resolved markets. Each row is scored "
+                  "on the markets that model predicted, and the production columns on exactly those markets. "
+                  "Lower is better.", "",
+                  "| Model | Role | Markets | Brier | Log loss | Production Brier | Production log loss |",
+                  "|---|---|---:|---:|---:|---:|---:|"]
+        lines += [f"| {m['model']} | {m['role']} | {m['n']} | {_num(m['brier'])} | {_num(m['log_loss'])} | "
+                  f"{_num(m['production_brier'])} | {_num(m['production_log_loss'])} |" for m in comp["models"]]
     days = by_day(rep.get("bets") or [])
     if days:
         lines += ["", "## Results by market day", "",

@@ -6,6 +6,8 @@
     python main.py web           # dashboard only (reads the database)
     python main.py backtest      # walk-forward forecast backtest + fit calibration
                                  #   (--if-missing: only when no calibration is stored yet)
+    python main.py climatology   # load --years of observed highs/lows for the climatology baseline
+                                 #   (--if-missing: only when no history was loaded yet)
     python main.py report        # print the performance report
     python main.py export DIR    # write every table as CSV (+ report.json) to DIR
 
@@ -35,13 +37,14 @@ BANNER = """
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("command", nargs="?", default="run",
-                        choices=["run", "once", "worker", "web", "backtest", "report", "export"])
+                        choices=["run", "once", "worker", "web", "backtest", "climatology", "report", "export"])
     parser.add_argument("path", nargs="?", help="output directory for export")
     parser.add_argument("--config", help="path to config.toml")
     parser.add_argument("--days", type=int, default=90, help="backtest window in days")
-    parser.add_argument("--stations", help="backtest: comma-separated station codes (default: all enabled)")
+    parser.add_argument("--stations", help="backtest/climatology: comma-separated station codes (default: all enabled)")
+    parser.add_argument("--years", type=int, default=3, help="climatology: years of history to load")
     parser.add_argument("--if-missing", action="store_true",
-                        help="backtest: skip when the database already holds fitted calibration")
+                        help="backtest/climatology: skip when the database already holds it")
     args = parser.parse_args(argv)
 
     cfg = load_config(args.config)
@@ -80,6 +83,14 @@ def main(argv: list[str] | None = None) -> int:
 
     from wxbot.runner import Runner, build_engine
     engine = build_engine(cfg, db)
+    if args.command == "climatology":
+        from wxbot.history import load_history
+        if args.if_missing and db.get_state("history_loaded_at"):
+            print("observation history already loaded; skipping")
+            return 0
+        stations = [s.strip().upper() for s in args.stations.split(",")] if args.stations else None
+        print(json.dumps(load_history(engine, args.years, engine.clock().date(), stations), indent=2))
+        return 0
     runner = Runner(engine, cfg.schedule.cycle_minutes)
 
     if args.command == "once":

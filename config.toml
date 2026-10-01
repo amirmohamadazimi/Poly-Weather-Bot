@@ -63,6 +63,15 @@ default_sigma_c = [1.4, 1.7, 2.1, 2.5, 3.0]
 prob_floor = 0.01
 prob_ceiling = 0.99
 min_calibration_samples = 20
+# Baselines priced on every market next to the production model above. Their
+# predictions are stored and scored (REPORT.md "Model comparison") but never
+# traded. Known: "raw-forecast-v1", "climatology-v1".
+shadow_models = ["raw-forecast-v1", "climatology-v1"]
+# climatology-v1: observed highs/lows within this many days of the same date in
+# past years (load them with `python main.py climatology`); no prediction with
+# fewer samples than climatology_min_samples.
+climatology_window_days = 7
+climatology_min_samples = 20
 
 [strategy]
 min_model_prob = 0.80       # confidence: model probability of the side we'd buy

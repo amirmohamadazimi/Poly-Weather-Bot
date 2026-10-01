@@ -78,7 +78,8 @@ calibration (backtest) ─┘                                               (Pol
 3. **Predict** with `normal-multimodel-v1`: a normal distribution centred on the
    bias-corrected model mean, with sigma = the larger of the backtest error and
    the models' disagreement. Bucket probability accounts for whole-degree
-   reporting. Probabilities are clamped to 1–99%.
+   reporting. Probabilities are clamped to 1–99%. Two baselines are priced on
+   the same inputs but never traded (see [Models and baselines](#models-and-baselines)).
 4. **Signal:** pick the better side (YES or NO) and check every rule. A prediction
    of 95% is *not* a bet unless the price leaves an edge.
 5. **Paper bet:** size it, then simulate the fill by walking the real CLOB order
@@ -166,6 +167,42 @@ is worked off over several cycles. Turn price history off with `[markets]
 store_price_history = false`. A backtest using these prices must only read
 points with `t` at or before its decision time.
 
+### Models and baselines
+
+Every model sees the same feature set (`wxbot/features.py`, version `fs-v1`):
+the models' mean, spread, minimum and maximum, how many models, lead time,
+forecast horizon (hours from the oldest model run to the end of the target
+day), station, kind, month and day of year, and the station's climatology
+(mean and spread of past observations near that date) with the forecast's
+anomaly from it. The features are stored with each production prediction.
+
+| Model | Role | What it is |
+|---|---|---|
+| `normal-multimodel-v1` | production | Bias-corrected model mean, backtest-fitted sigma (above). The only model that trades |
+| `raw-forecast-v1` | shadow | The same normal model on the raw model mean, with no station bias correction and the default sigma for the lead time |
+| `climatology-v1` | shadow | How often the observed high/low, in whole degrees, fell in the bucket on days within 7 days of the same date in past years. Ignores the forecast; no prediction with fewer than 20 past days |
+
+Shadow models are listed in `[model] shadow_models`. Their predictions are
+stored with `role = "shadow"` and never create a signal or a bet. The
+`model_versions` table is the registry: each model version, its calibration
+version, feature set, parameters and current role (production, shadow or
+retired). A version removed from the config is marked retired, never deleted.
+Changing a model means giving it a new version.
+
+Climatology needs past observations: `python main.py climatology --years 3`
+loads them from the IEM METAR archive (one request per station-year, about
+2 minutes for all stations). They are stored as ordinary observations,
+fetched at load time, so no prediction uses an observation before it was
+loaded.
+
+The report's **Model comparison** scores each model's prediction from the
+same cycle as the production model's last prediction made a day or more ahead,
+with Brier score and log loss. Each row is compared with the production model
+and the market price on exactly the markets that model predicted. On the
+running experiment's 1,672 resolved markets (2026-10-01), production scored
+Brier 0.0679 and log loss 0.220, the raw forecast replayed on the same stored
+inputs 0.0725 and 0.243, and the market price 0.0733 and 0.242.
+
 ### Sizing and risk
 
 `fixed_fraction` (1% of equity) by default; `fractional_kelly` (quarter Kelly) is
@@ -179,8 +216,8 @@ The dashboard and `python main.py report` show bankroll, P/L, ROI on staked
 money with a bootstrap 95% interval, win rate against the win rate the model
 predicted, drawdown, and **calibration of every prediction on every resolved
 market** (not only the ones bet on) with the market's own Brier score as a
-benchmark. The report states plainly when there are too few settled bets to
-conclude anything.
+benchmark, and the model comparison above. The report states plainly when
+there are too few settled bets to conclude anything.
 
 The backtest scores the forecast model walk-forward: each day is priced with
 bias/sigma fitted only on observations available when that forecast was issued,
@@ -261,7 +298,9 @@ PostgreSQL, install `psycopg[binary]` and set `WXBOT_APP__DATABASE_URL`.
 main.py                     CLI entry point
 config.toml                 all settings
 wxbot/data/                 Polymarket, Open-Meteo, METAR clients; station table
-wxbot/model/                predictor interface + normal multi-model v1
+wxbot/model/                predictor interface, normal multi-model v1, baselines, registry
+wxbot/features.py           the feature set every model sees
+wxbot/history.py            loads past observations for the climatology baseline
 wxbot/strategy/             betting rules, fill simulation, sizing
 wxbot/execution/            paper broker, bankroll ledger, live-trading guard
 wxbot/evaluation/           metrics (ROI, drawdown, Brier, calibration)
