@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo
 import requests
 from sqlalchemy import and_, desc, exists, func, or_, select, update
 
+from wxbot.calibration.fit import active_calibrator, fit_round
 from wxbot.data.polymarket import Bucket, ParsedMarket, parse_time, resolved_outcome
 from wxbot.data.stations import get_station
 from wxbot.data.validation import validate_forecast, validate_observation
@@ -84,6 +85,7 @@ class Engine:
         steps = [
             ("markets", self.collect_markets),
             ("forecasts", self.collect_forecasts),
+            ("calibration", self.maybe_fit_calibration),
             ("signals", self.predict_and_trade),
             ("settlement", self.settle),
             ("observations", self.maybe_collect_observations),
@@ -217,10 +219,29 @@ class Engine:
             return Calibration(bias_c=row["bias_c"], sigma_c=row["sigma_c"], n=row["n"], source="backtest")
         return default_calibration(list(self.cfg.model.default_sigma_c), lead_days)
 
-    # -- 3. predictions, signals, paper bets ---------------------------------
+    # -- 3. probability calibration ---------------------------------------
+    def maybe_fit_calibration(self, force: bool = False) -> dict:
+        """Refit the probability calibrators at most every refit_hours (DB only,
+        no network); see wxbot/calibration/fit.py for the approval rule."""
+        now = self.clock()
+        last = self.db.get_state("last_calibration_fit")
+        hours = float(self.cfg.calibration.refit_hours)
+        if not force and last and now - datetime.fromisoformat(last) < timedelta(hours=hours):
+            return {"skipped": True}
+        rows = fit_round(self.db, self.cfg, self.predictor.version, now)
+        self.db.set_state("last_calibration_fit", now.isoformat())
+        chosen = next((r["version"] for r in rows if r["selected"]), "identity")
+        self.db.log_event("INFO", "calibration", f"fit on {rows[0]['n'] if rows else 0} resolved markets: "
+                          f"using {chosen}", details={r["method"]: {k: r[k] for k in (
+                              "approved", "reason", "brier_before", "brier_after", "log_loss_before",
+                              "log_loss_after")} for r in rows})
+        return {"n": rows[0]["n"] if rows else 0, "using": chosen}
+
+    # -- 4. predictions, signals, paper bets ---------------------------------
     def predict_and_trade(self) -> dict:
         now = self.clock()
         n_pred = n_shadow = n_bets = 0
+        calibrator = active_calibrator(self.db, self.cfg, self.predictor.version, now)
         history: dict[tuple, dict] = {}     # observed values per (station, kind), read once per cycle
         features: dict[tuple, object] = {}  # per (station, day, kind, forecast)
         shadow_errors: dict[str, str] = {}
@@ -246,15 +267,17 @@ class Engine:
             pred.inputs["forecast_fetched_at"] = fetched_at.isoformat()
             pred.inputs["forecast_source"] = fc["source"]
             pred.inputs["features"] = feats.values
+            cal_p = calibrator(pred.p_yes)
             pred_id = self.db.insert(predictions, ts=now, market_id=m["id"], forecast_snapshot_id=fc["id"],
                                      model_version=pred.model_version, lead_days=lead_days, mu_c=pred.mu_c,
                                      sigma_c=pred.sigma_c, p_yes=pred.p_yes, inputs=pred.inputs,
-                                     role="production", feature_set=FEATURE_SET)
+                                     role="production", feature_set=FEATURE_SET, calibrated_prob=cal_p,
+                                     calibrator_version=calibrator.version)
             n_pred += 1
             n_shadow += self._shadow_predictions(m, fc, bucket, values, lead_days, calib, feats, pred_id, now,
                                                  shadow_errors)
             forecast_age = (now - fetched_at).total_seconds() / 60.0
-            if self._signal(m, st, pred, pred_id, forecast_age, now):
+            if self._signal(m, st, pred, pred_id, forecast_age, now, cal_p, calibrator.version):
                 n_bets += 1
         for version, err in shadow_errors.items():
             self.db.log_event("WARNING", "shadow_model", f"{version}: {err}")
@@ -293,14 +316,17 @@ class Engine:
         ms = market_snapshots.c
         return self.db.one(select(market_snapshots).where(ms.market_id == market_id).order_by(desc(ms.id)).limit(1))
 
-    def _signal(self, m: dict, st, pred, pred_id: int, forecast_age: float, now: datetime) -> bool:
+    def _signal(self, m: dict, st, pred, pred_id: int, forecast_age: float, now: datetime,
+                cal_p: float, calibrator_version: str) -> bool:
+        """Every rule uses the calibrated probability (the raw one when no
+        calibrator is approved); the raw model probability is kept alongside."""
         cfg = self.cfg
         snap = self._latest_snapshot(m["id"]) or {}
         bid, ask, yes_px = snap.get("best_bid"), snap.get("best_ask"), snap.get("yes_price")
         yes_mid = (bid + ask) / 2 if bid is not None and ask is not None else yes_px
-        quotes = {  # side -> (model prob, top-of-book ask for that side, mid-implied prob)
-            "YES": (pred.p_yes, ask if ask and ask < 1 else None, yes_mid),
-            "NO": (1 - pred.p_yes, (1 - bid) if bid else None, None if yes_mid is None else 1 - yes_mid),
+        quotes = {  # side -> (calibrated prob, top-of-book ask for that side, mid-implied prob)
+            "YES": (cal_p, ask if ask and ask < 1 else None, yes_mid),
+            "NO": (1 - cal_p, (1 - bid) if bid else None, None if yes_mid is None else 1 - yes_mid),
         }
 
         def score(side):
@@ -308,6 +334,7 @@ class Engine:
             return (px is not None, p - px if px is not None else p)
         side = max(quotes, key=score)
         model_prob, top_price, market_prob = quotes[side]
+        raw_prob = pred.p_yes if side == "YES" else 1 - pred.p_yes
         if top_price is not None:
             top_price = min(top_price + cfg.strategy.slippage, 0.999) * (1 + cfg.strategy.fee_rate)
         bank = portfolio.bankroll(self.db, cfg.bankroll.initial)
@@ -349,22 +376,28 @@ class Engine:
         price = ctx.entry_price
         edge = None if price is None else model_prob - price
         ev = None if not price else model_prob / price - 1
-        results_out = results + ([{"rule": "sizing_detail", "passed": True, "value": sizing, "threshold": None}]
-                                 if sizing else [])
+        probabilities = {"model": round(raw_prob, 6), "calibrated": round(model_prob, 6),
+                         "calibrator": calibrator_version,
+                         "market": None if market_prob is None else round(market_prob, 6)}
+        results_out = ([{"rule": "probabilities", "passed": True, "value": probabilities, "threshold": None}]
+                       + results + ([{"rule": "sizing_detail", "passed": True, "value": sizing, "threshold": None}]
+                                    if sizing else []))
         sig_id = self.db.insert(
-            signals, ts=now, prediction_id=pred_id, market_id=m["id"], side=side, model_prob=model_prob,
-            market_prob=market_prob, entry_price=price, edge=edge, ev_per_dollar=ev, confidence=model_prob,
+            signals, ts=now, prediction_id=pred_id, market_id=m["id"], side=side, model_prob=raw_prob,
+            calibrated_prob=model_prob, market_prob=market_prob, entry_price=price, edge=edge, ev_per_dollar=ev,
+            confidence=model_prob,
             proposed_stake=ctx.stake, decision=decision,
             reason="all rules passed" if not bad else "failed: " + ", ".join(bad), rule_results=results_out)
         if decision == "BET":
-            bet_id = self.broker.place(signal_id=sig_id, market=m, side=side, fill=fill, model_prob=model_prob,
-                                       market_prob=market_prob, edge=edge, ev=ev)
+            bet_id = self.broker.place(signal_id=sig_id, market=m, side=side, fill=fill, model_prob=raw_prob,
+                                       market_prob=market_prob, edge=edge, ev=ev, confidence=model_prob)
             self.db.log_event("INFO", "paper_bet", f"bet #{bet_id}: {side} '{m['question']}' "
-                              f"${fill.total:.2f} @ {fill.avg_price:.3f} (model {model_prob:.2f})")
+                              f"${fill.total:.2f} @ {fill.avg_price:.3f} (model {raw_prob:.2f}, "
+                              f"calibrated {model_prob:.2f})")
             return True
         return False
 
-    # -- 4. settlement ------------------------------------------------------
+    # -- 5. settlement ------------------------------------------------------
     def settle(self) -> dict:
         """Ask Polymarket about every market with an open bet or a past date.
         Untradeable markets are included so every market gets its result and close time."""
@@ -396,7 +429,7 @@ class Engine:
                     conn.execute(update(markets).where(mk.id == market_id).values(
                         closed=True, **({"closed_time": closed_time} if closed_time else {})))
             if outcome:
-                settled += len(self.broker.settle_market(market_id, outcome, {
+                settled += len(self.broker.settle_market(market_id, outcome, resolved_at=now, raw={
                     "outcomePrices": raw.get("outcomePrices"), "umaResolutionStatus": raw.get("umaResolutionStatus"),
                     "closedTime": raw.get("closedTime")}))
         return {"checked": checked, "bets_settled": settled, "price_histories": self._store_price_histories(now)}
@@ -461,7 +494,7 @@ class Engine:
                 dict(market_id=market_id, token="YES", t=t, price=p, fetched_at=now) for t, p in kept])
         return 1
 
-    # -- 5. observations ----------------------------------------------------
+    # -- 6. observations ----------------------------------------------------
     def maybe_collect_observations(self, force: bool = False) -> dict:
         now = self.clock()
         last = self.db.get_state("last_observation_update")

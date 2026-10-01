@@ -73,6 +73,22 @@ shadow_models = ["raw-forecast-v1", "climatology-v1"]
 climatology_window_days = 7
 climatology_min_samples = 20
 
+[calibration]
+# Maps the production model's probability to one that matches how often such
+# predictions came true (wxbot/calibration/). Refitted at most every
+# refit_hours on resolved markets only; the newest holdout_fraction of them
+# (by decision time) judges each fit, which is approved only if it beats the
+# raw probabilities on both Brier score and log loss and at least min_samples
+# markets were available. Without an approved fit the raw probability is used.
+methods = ["isotonic", "platt"]
+min_samples = 200
+holdout_fraction = 0.3
+# the log-loss gain must hold in this share of bootstrap resamples of the holdout
+min_confidence = 0.95
+# isotonic blocks smaller than this are merged, so no step rests on a few markets
+isotonic_min_block = 20
+refit_hours = 24
+
 [strategy]
 min_model_prob = 0.80       # confidence: model probability of the side we'd buy
 min_edge = 0.05             # model prob - entry price (after fees/slippage)

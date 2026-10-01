@@ -13,8 +13,9 @@ others, and a failure in one stage is logged and does not stop the rest.
 | Features | `wxbot/features.py` (`build_features`, climatology window) | `predictions.inputs.features`, `predictions.feature_set` |
 | Prediction | `wxbot/model/` (`Predictor` interface, `NormalMultiModel`) | `predictions` (role production) |
 | Shadow baselines | `wxbot/model/baselines.py` (`RawForecast`, `Climatology`) | `predictions` (role shadow; never a signal) |
+| Probability calibration | `wxbot/calibration/` (`fit_round` once a day as its own stage, `active_calibrator` each cycle) | `prob_calibrators`, `predictions.calibrated_prob/calibrator_version` |
 | Model registry | `wxbot/model/registry.py` (`sync_registry`, at engine start) | `model_versions` |
-| Market pricing and signal | `wxbot/strategy/rules.py` (`simulate_fill`, `evaluate`) | `signals` |
+| Market pricing and signal | `wxbot/strategy/rules.py` (`simulate_fill`, `evaluate`), on the calibrated probability | `signals` (raw and calibrated probability) |
 | Risk and sizing | `wxbot/strategy/sizing.py`, `wxbot/execution/portfolio.py` | `signals.proposed_stake`, `rule_results` |
 | Paper trading | `wxbot/execution/paper.py` (`PaperBroker`) | `paper_bets`, `bankroll_snapshots` |
 | Resolution and settlement | `Engine.settle` | `market_resolutions`, `paper_bets`, `markets.closed_time` |

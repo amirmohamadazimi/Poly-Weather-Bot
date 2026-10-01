@@ -6,6 +6,7 @@
     python main.py web           # dashboard only (reads the database)
     python main.py backtest      # walk-forward forecast backtest + fit calibration
                                  #   (--if-missing: only when no calibration is stored yet)
+    python main.py calibrate     # refit the probability calibrators now (the cycle does it daily)
     python main.py climatology   # load --years of observed highs/lows for the climatology baseline
                                  #   (--if-missing: only when no history was loaded yet)
     python main.py report        # print the performance report
@@ -37,7 +38,8 @@ BANNER = """
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("command", nargs="?", default="run",
-                        choices=["run", "once", "worker", "web", "backtest", "climatology", "report", "export"])
+                        choices=["run", "once", "worker", "web", "backtest", "calibrate", "climatology", "report",
+                                 "export"])
     parser.add_argument("path", nargs="?", help="output directory for export")
     parser.add_argument("--config", help="path to config.toml")
     parser.add_argument("--days", type=int, default=90, help="backtest window in days")
@@ -83,6 +85,11 @@ def main(argv: list[str] | None = None) -> int:
 
     from wxbot.runner import Runner, build_engine
     engine = build_engine(cfg, db)
+    if args.command == "calibrate":
+        from wxbot.evaluation.metrics import latest_calibrators
+        print(json.dumps({"summary": engine.maybe_fit_calibration(force=True), "fits": latest_calibrators(db)},
+                         indent=2, default=str))
+        return 0
     if args.command == "climatology":
         from wxbot.history import load_history
         if args.if_missing and db.get_state("history_loaded_at"):

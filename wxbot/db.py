@@ -170,6 +170,33 @@ predictions = Table(
     Column("inputs", JSON),                           # everything the model used
     Column("role", String(12)),                       # production | shadow (None = before v2 M4: production)
     Column("feature_set", String(20)),                # see wxbot/features.py
+    Column("calibrated_prob", Float),                 # p_yes after the active calibrator (production only)
+    Column("calibrator_version", String(60)),         # prob_calibrators.version, or "identity"
+)
+
+prob_calibrators = Table(  # every probability-calibrator fit; the newest round's selected one is active
+    "prob_calibrators", metadata,
+    Column("id", Integer, primary_key=True),
+    Column("version", String(60), nullable=False),
+    Column("method", String(12), nullable=False),      # isotonic | platt
+    Column("model_version", String(40), nullable=False, index=True),
+    _ts("fitted_at"),
+    Column("n", Integer),                              # resolved markets available
+    Column("n_train", Integer),
+    Column("n_holdout", Integer),
+    Column("train_from", DateTime(timezone=True)),     # decision times covered
+    Column("train_to", DateTime(timezone=True)),
+    Column("holdout_from", DateTime(timezone=True)),
+    Column("holdout_to", DateTime(timezone=True)),
+    Column("params", JSON),
+    Column("brier_before", Float),                     # on the holdout: raw probabilities
+    Column("brier_after", Float),                      # on the holdout: calibrated
+    Column("log_loss_before", Float),
+    Column("log_loss_after", Float),
+    Column("improvement_confidence", Float),           # share of holdout bootstrap resamples where it wins
+    Column("approved", Boolean, nullable=False),
+    Column("selected", Boolean, nullable=False),       # the one used until the next fit round
+    Column("reason", Text),
 )
 
 model_versions = Table(  # model registry: every model version the bot has run, and its current role
@@ -193,7 +220,8 @@ signals = Table(
     Column("prediction_id", Integer, ForeignKey("predictions.id"), index=True),
     Column("market_id", String(40), ForeignKey("markets.id"), index=True),
     Column("side", String(3)),                        # YES | NO (best side)
-    Column("model_prob", Float),
+    Column("model_prob", Float),                      # raw model probability of that side
+    Column("calibrated_prob", Float),                 # after calibration; what the rules use
     Column("market_prob", Float),                     # mid-implied prob of that side
     Column("entry_price", Float),                     # fill price incl. slippage+fee
     Column("edge", Float),
@@ -279,7 +307,8 @@ backtest_runs = Table(
 EXPORT_TABLES = [
     "paper_bets", "signals", "predictions", "forecast_snapshots", "forecast_values", "markets",
     "market_snapshots", "market_price_history", "market_criteria_history", "market_resolutions", "bankroll_snapshots",
-    "weather_observations", "calibration_params", "backtest_runs", "model_versions", "system_events",
+    "weather_observations", "calibration_params", "backtest_runs", "model_versions", "prob_calibrators",
+    "system_events",
 ]
 
 
