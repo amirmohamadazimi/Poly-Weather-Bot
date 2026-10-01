@@ -41,6 +41,7 @@ Other commands:
 | `python main.py worker` | Loop without the dashboard |
 | `python main.py web` | Dashboard only (e.g. a second process reading the same DB) |
 | `python main.py backtest [--days 90] [--stations EGLC,KLGA]` | Walk-forward forecast backtest, stores calibration |
+| `python main.py calibrate` | Refit the probability calibrators now (each cycle refits once a day) |
 | `python main.py report` | End-of-experiment performance report (markdown) |
 | `python main.py export [DIR]` | Every table as CSV plus `report.json` |
 
@@ -64,8 +65,8 @@ one-month experiment:
 
 ```
 markets (Gamma API) ─┐
-forecasts (Open-Meteo, 5 models) ─┼─> prediction ─> signal (rules) ─> paper bet ─> settlement ─> stats
-calibration (backtest) ─┘                                               (Polymarket resolution)
+forecasts (Open-Meteo, 5 models) ─┼─> prediction ─> calibrated probability ─> signal (rules) ─> paper bet ─> settlement ─> stats
+calibration (backtest) ─┘                                                                        (Polymarket resolution)
 ```
 
 1. **Discover** open `daily-temperature` events. The resolution station is read
@@ -80,11 +81,15 @@ calibration (backtest) ─┘                                               (Pol
    the models' disagreement. Bucket probability accounts for whole-degree
    reporting. Probabilities are clamped to 1–99%. Two baselines are priced on
    the same inputs but never traded (see [Models and baselines](#models-and-baselines)).
-4. **Signal:** pick the better side (YES or NO) and check every rule. A prediction
-   of 95% is *not* a bet unless the price leaves an edge.
-5. **Paper bet:** size it, then simulate the fill by walking the real CLOB order
+4. **Calibrate** the probability with the approved probability calibrator, if
+   there is one (see [Probability calibration](#probability-calibration)).
+   Otherwise the model's own probability is used unchanged.
+5. **Signal:** pick the better side (YES or NO) and check every rule on the
+   calibrated probability. A prediction of 95% is *not* a bet unless the price
+   leaves an edge.
+6. **Paper bet:** size it, then simulate the fill by walking the real CLOB order
    book (taking at most 25% of each level, plus slippage and fees).
-6. **Settle** when Polymarket resolves the market (prices pinned to 1/0).
+7. **Settle** when Polymarket resolves the market (prices pinned to 1/0).
 
 Every row is insert-only, and the chain bet → signal (with every rule result
 and sizing cap) → prediction (with every model input) → forecast snapshot lets
@@ -94,8 +99,8 @@ you reconstruct exactly why each bet was made. Click any row in the dashboard to
 
 | Rule | Default |
 |---|---|
-| Model probability of the side bought (confidence) | ≥ 0.80 |
-| Edge = model probability − effective entry price | ≥ 0.05 |
+| Calibrated probability of the side bought (confidence) | ≥ 0.80 |
+| Edge = calibrated probability − effective entry price | ≥ 0.05 |
 | Expected value per $1 | ≥ 0.04 |
 | Entry price | 0.03 – 0.97 |
 | Market liquidity | ≥ $300 |
@@ -203,6 +208,37 @@ running experiment's 1,672 resolved markets (2026-10-01), production scored
 Brier 0.0679 and log loss 0.220, the raw forecast replayed on the same stored
 inputs 0.0725 and 0.243, and the market price 0.0733 and 0.242.
 
+### Probability calibration
+
+A model can rank outcomes well and still be over- or under-confident: if its
+90% predictions come true 80% of the time, every 90% should be read as 80%.
+`wxbot/calibration/` learns that map from resolved markets:
+
+* **isotonic**: a non-decreasing step function (pool-adjacent-violators), with
+  every step resting on at least 20 markets and the ends pinned to 0 and 1.
+* **platt**: `sigmoid(a · logit(p) + b)`, a smooth two-parameter fit.
+
+Each fit uses only what was known at fit time: markets whose result the bot
+had recorded, one prediction per market (the latest made at least 18 h before
+the end of the target day, as a bet would be). The newest 30% of those markets,
+by decision time, are held out. A method is approved only when, on the
+holdout, it beats the raw probabilities on **both** Brier score and log loss,
+at least 200 markets were available, and the log-loss gain holds in 95% of
+2,000 bootstrap resamples of the holdout. The approved method with the lowest
+holdout log loss is used until the next fit, a day later. With nothing approved,
+the raw probability is used. Every fit is kept in `prob_calibrators`, and every
+prediction records the calibrator it used.
+
+Each signal's first rule result shows the model's probability, the calibrated
+probability, the calibrator and the market's probability. The report adds log
+loss, expected calibration error and reliability bins for the calibrated
+probabilities, and the latest fit with its holdout scores.
+
+On the running experiment's data (1,837 resolved markets, 2026-10-01), neither
+method passes: isotonic improved log loss slightly (0.2311 → 0.2298) but not
+Brier, and won in only 67% of resamples; Platt was worse on Brier. So the raw
+probabilities stay in use.
+
 ### Sizing and risk
 
 `fixed_fraction` (1% of equity) by default; `fractional_kelly` (quarter Kelly) is
@@ -216,7 +252,8 @@ The dashboard and `python main.py report` show bankroll, P/L, ROI on staked
 money with a bootstrap 95% interval, win rate against the win rate the model
 predicted, drawdown, and **calibration of every prediction on every resolved
 market** (not only the ones bet on) with the market's own Brier score as a
-benchmark, and the model comparison above. The report states plainly when
+benchmark, log loss and expected calibration error, raw and calibrated, and
+the model comparison above. The report states plainly when
 there are too few settled bets to conclude anything.
 
 The backtest scores the forecast model walk-forward: each day is priced with
@@ -300,10 +337,11 @@ config.toml                 all settings
 wxbot/data/                 Polymarket, Open-Meteo, METAR clients; station table
 wxbot/model/                predictor interface, normal multi-model v1, baselines, registry
 wxbot/features.py           the feature set every model sees
+wxbot/calibration/          isotonic and Platt probability calibration, walk-forward fit and approval
 wxbot/history.py            loads past observations for the climatology baseline
 wxbot/strategy/             betting rules, fill simulation, sizing
 wxbot/execution/            paper broker, bankroll ledger, live-trading guard
-wxbot/evaluation/           metrics (ROI, drawdown, Brier, calibration)
+wxbot/evaluation/           metrics (ROI, drawdown, Brier, log loss, ECE, model comparison)
 wxbot/engine.py             one cycle: collect -> predict -> bet -> settle
 wxbot/runner.py             background loop
 wxbot/backtest.py           walk-forward backtest + calibration fit

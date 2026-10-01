@@ -9,7 +9,8 @@ from collections import defaultdict
 from sqlalchemy import and_, func, or_, select
 
 from wxbot.db import (
-    Database, bankroll_snapshots, market_resolutions, markets, model_versions, paper_bets, predictions, signals,
+    Database, bankroll_snapshots, market_resolutions, markets, model_versions, paper_bets, predictions,
+    prob_calibrators, signals,
 )
 
 # rows from before v2 M4 have no role: they were all made by the production model
@@ -41,6 +42,15 @@ def log_loss(probs: list[float], outcomes: list[int]) -> float | None:
         return None
     clip = [min(1 - LOG_LOSS_EPS, max(LOG_LOSS_EPS, p)) for p in probs]
     return statistics.fmean(-math.log(p) if o else -math.log(1 - p) for p, o in zip(clip, outcomes))
+
+
+def ece(probs: list[float], outcomes: list[int], n_bins: int = 10) -> float | None:
+    """Expected calibration error: the gap between mean prediction and observed
+    frequency in each of n_bins equal-width bins, weighted by the bin's share."""
+    if not probs:
+        return None
+    bins = calibration_bins(probs, outcomes, n_bins)
+    return sum(b["n"] * abs(b["mean_pred"] - b["observed"]) for b in bins) / len(probs)
 
 
 def calibration_bins(probs: list[float], outcomes: list[int], n_bins: int = 10) -> list[dict]:
@@ -81,7 +91,8 @@ def overview(db: Database, initial: float) -> dict:
     bank = bankroll(db, initial)
     eq = [r["equity"] for r in db.rows(select(bankroll_snapshots.c.equity).order_by(bankroll_snapshots.c.id))]
     dd, dd_pct, _ = max_drawdown([initial] + eq)
-    probs = [b["model_prob"] for b in settled]
+    # the probability the decision used: calibrated when a calibrator was active
+    probs = [b["model_prob"] if b["confidence"] is None else b["confidence"] for b in settled]
     outs = [1 if b["status"] == "WON" else 0 for b in settled]
     ci = bootstrap_roi_ci([b["stake"] for b in settled], [b["pnl"] for b in settled])
     return {
@@ -110,9 +121,10 @@ def prediction_calibration(db: Database, min_lead_days: int = 1) -> dict:
     prediction made at least `min_lead_days` ahead, versus what happened."""
     p, r = predictions.c, market_resolutions.c
     latest = decision_predictions(min_lead_days)
-    rows = db.rows(select(p.p_yes, p.market_id, r.outcome).join(latest, latest.c.pid == p.id)
-                   .join(market_resolutions, r.market_id == p.market_id))
+    rows = db.rows(select(p.p_yes, p.calibrated_prob, p.calibrator_version, p.market_id, r.outcome)
+                   .join(latest, latest.c.pid == p.id).join(market_resolutions, r.market_id == p.market_id))
     probs = [x["p_yes"] for x in rows]
+    cal = [x["p_yes"] if x["calibrated_prob"] is None else x["calibrated_prob"] for x in rows]
     outs = [1 if x["outcome"] == "YES" else 0 for x in rows]
     # market benchmark: mid-implied YES probability on the signal made from the same prediction
     s = signals.c
@@ -123,6 +135,11 @@ def prediction_calibration(db: Database, min_lead_days: int = 1) -> dict:
     paired = [(mk[x["market_id"]], o) for x, o in zip(rows, outs) if x["market_id"] in mk]
     return {
         "n": len(rows), "brier_model": brier(probs, outs), "log_loss_model": log_loss(probs, outs),
+        "ece_model": ece(probs, outs),
+        # calibrated = what the rules used (the raw probability where no calibrator was active)
+        "n_calibrated": sum(x["calibrator_version"] not in (None, "identity") for x in rows),
+        "brier_calibrated": brier(cal, outs), "log_loss_calibrated": log_loss(cal, outs),
+        "ece_calibrated": ece(cal, outs), "bins_calibrated": calibration_bins(cal, outs),
         "brier_market": brier([a for a, _ in paired], [o for _, o in paired]), "n_market": len(paired),
         "bins": calibration_bins(probs, outs),
     }
@@ -151,24 +168,28 @@ def model_comparison(db: Database, min_lead_days: int = 1) -> dict:
     p, r, s = predictions.c, market_resolutions.c, signals.c
     latest = decision_predictions(min_lead_days)
     moment = select(p.market_id, p.ts, p.id.label("pid")).join(latest, latest.c.pid == p.id).subquery()
-    rows = db.rows(select(p.id, p.market_id, p.model_version, p.role, p.p_yes, r.outcome)
+    rows = db.rows(select(p.id, p.market_id, p.model_version, p.role, p.p_yes, p.calibrated_prob,
+                          p.calibrator_version, r.outcome)
                    .join(moment, and_(moment.c.market_id == p.market_id, moment.c.ts == p.ts))
                    .join(market_resolutions, r.market_id == p.market_id).order_by(p.id))
     outcome: dict[str, int] = {}
     production: dict[str, float] = {}
     by_model: dict[str, dict[str, float]] = defaultdict(dict)
+    calibrated: dict[str, dict[str, float]] = defaultdict(dict)
     for x in rows:  # ordered by id, so a repeated cycle keeps its last prediction
         outcome[x["market_id"]] = 1 if x["outcome"] == "YES" else 0
         by_model[x["model_version"]][x["market_id"]] = x["p_yes"]
         if x["role"] in (None, "production"):
             production[x["market_id"]] = x["p_yes"]
+            if x["calibrator_version"] not in (None, "identity"):
+                calibrated[x["model_version"] + " calibrated"][x["market_id"]] = x["calibrated_prob"]
     market: dict[str, float] = {}
     for x in db.rows(select(s.market_id, s.side, s.market_prob).join(moment, moment.c.pid == s.prediction_id)):
         if x["market_prob"] is not None:
             market[x["market_id"]] = x["market_prob"] if x["side"] == "YES" else 1 - x["market_prob"]
     roles = {x["version"]: x["role"] for x in db.rows(select(model_versions.c.version, model_versions.c.role))}
     out = []
-    for version, probs in sorted(by_model.items()):
+    for version, probs in sorted({**by_model, **calibrated}.items()):
         ids = probs.keys() & production.keys()
         b, ll = _scores(probs, outcome, ids)
         pb, pll = _scores(production, outcome, ids)
@@ -204,7 +225,19 @@ def performance_series(db: Database, initial: float) -> dict:
                                             [1 if b["status"] == "WON" else 0 for b in settled]),
         "prediction_calibration": prediction_calibration(db),
         "model_comparison": model_comparison(db),
+        "calibrators": latest_calibrators(db),
     }
+
+
+def latest_calibrators(db: Database) -> list[dict]:
+    """The newest calibration fit round: one row per method."""
+    pc = prob_calibrators.c
+    last = db.one(select(func.max(pc.fitted_at).label("t")))
+    if not last or last["t"] is None:
+        return []
+    return db.rows(select(pc.version, pc.method, pc.model_version, pc.fitted_at, pc.n, pc.n_train, pc.n_holdout,
+                          pc.brier_before, pc.brier_after, pc.log_loss_before, pc.log_loss_after, pc.approved,
+                          pc.selected, pc.reason).where(pc.fitted_at == last["t"]).order_by(pc.id))
 
 
 def market_count(db: Database) -> int:

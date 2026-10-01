@@ -6,7 +6,7 @@ import json
 from sqlalchemy import desc, select
 
 from wxbot.db import Database, markets, paper_bets, system_events
-from wxbot.evaluation.metrics import model_comparison, overview, prediction_calibration
+from wxbot.evaluation.metrics import latest_calibrators, model_comparison, overview, prediction_calibration
 
 
 def _pct(x) -> str:
@@ -21,6 +21,7 @@ def build_report(db: Database, initial: float) -> dict:
     ov = overview(db, initial)
     cal = prediction_calibration(db)
     return {"overview": ov, "prediction_calibration": cal, "model_comparison": model_comparison(db),
+            "calibrators": latest_calibrators(db),
             "verdict": verdict(ov, cal),
             "status": status(db), "bets": all_bets(db)}
 
@@ -102,10 +103,29 @@ def to_markdown(rep: dict) -> str:
         f"| Brier on bets: model / market | {_num(ov['brier_bets'])} / {_num(ov['brier_market_on_bets'])} |",
         f"| Max drawdown | ${ov['max_drawdown']:.2f} ({_pct(ov['max_drawdown_pct'])}) |", "",
         "## Calibration of all predictions on resolved markets", "",
-        f"Markets: {cal['n']} · Brier model {_num(cal['brier_model'])} · market {_num(cal['brier_market'])}", "",
+        f"Markets: {cal['n']} · Brier model {_num(cal['brier_model'])} · market {_num(cal['brier_market'])} · "
+        f"log loss {_num(cal.get('log_loss_model'))} · expected calibration error {_num(cal.get('ece_model'))}", "",
         "| Predicted bin | n | Mean predicted | Observed |", "|---|---:|---:|---:|",
         *[f"| {b['bin']} | {b['n']} | {_pct(b['mean_pred'])} | {_pct(b['observed'])} |" for b in cal["bins"]],
     ]
+    if cal.get("n_calibrated"):
+        lines += ["", f"After calibration ({cal['n_calibrated']} of {cal['n']} markets had an approved calibrator): "
+                  f"Brier {_num(cal['brier_calibrated'])} · log loss {_num(cal['log_loss_calibrated'])} · "
+                  f"expected calibration error {_num(cal['ece_calibrated'])}", "",
+                  "| Calibrated bin | n | Mean calibrated | Observed |", "|---|---:|---:|---:|",
+                  *[f"| {b['bin']} | {b['n']} | {_pct(b['mean_pred'])} | {_pct(b['observed'])} |"
+                    for b in cal["bins_calibrated"]]]
+    cals = rep.get("calibrators")
+    if cals:
+        lines += ["", "## Probability calibrators (latest fit)", "",
+                  f"Fitted {str(cals[0]['fitted_at'])[:16]} on {cals[0]['n']} resolved markets "
+                  f"({cals[0]['n_train']} to fit, the newest {cals[0]['n_holdout']} to judge).", "",
+                  "| Method | Holdout Brier raw → calibrated | Holdout log loss raw → calibrated | Approved | In use |",
+                  "|---|---|---|---|---|"]
+        lines += [f"| {c['method']} | {_num(c['brier_before'])} → {_num(c['brier_after'])} | "
+                  f"{_num(c['log_loss_before'])} → {_num(c['log_loss_after'])} | "
+                  f"{'yes' if c['approved'] else 'no: ' + (c['reason'] or '')} | {'yes' if c['selected'] else ''} |"
+                  for c in cals]
     comp = rep.get("model_comparison")
     if comp:
         lines += ["", "## Model comparison", "",

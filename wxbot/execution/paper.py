@@ -1,6 +1,8 @@
 """Paper broker: records simulated fills and settles them. Never touches money."""
 from __future__ import annotations
 
+from datetime import datetime
+
 from sqlalchemy import select, update
 
 from wxbot.db import Database, market_resolutions, markets, paper_bets, utcnow
@@ -17,22 +19,28 @@ class PaperBroker:
         self.initial = initial_bankroll
 
     def place(self, *, signal_id: int, market: dict, side: str, fill: Fill, model_prob: float,
-              market_prob: float | None, edge: float, ev: float) -> int:
+              market_prob: float | None, edge: float, ev: float, confidence: float | None = None) -> int:
+        """`model_prob` is the raw model probability of the side; `confidence` the
+        (calibrated) probability the decision used, model_prob when not given."""
         token = market["yes_token"] if side == "YES" else market["no_token"]
         bet_id = self.db.insert(
             paper_bets, signal_id=signal_id, market_id=market["id"], event_id=market["event_id"],
             side=side, token_id=token, opened_at=utcnow(), market_prob=market_prob,
-            model_prob=model_prob, edge=edge, ev_per_dollar=ev, confidence=model_prob,
+            model_prob=model_prob, edge=edge, ev_per_dollar=ev,
+            confidence=model_prob if confidence is None else confidence,
             entry_price=fill.avg_price, shares=fill.shares, stake=fill.total, fee=fill.fee,
             fill={"levels": fill.levels, "cost": fill.cost, "fee": fill.fee}, status="OPEN", mode="paper")
         portfolio.snapshot(self.db, self.initial, f"bet#{bet_id}")
         return bet_id
 
-    def settle_market(self, market_id: str, outcome: str, raw: dict | None = None) -> list[int]:
-        """Settle every open bet on a market that Polymarket resolved to `outcome`."""
+    def settle_market(self, market_id: str, outcome: str, raw: dict | None = None,
+                      resolved_at: datetime | None = None) -> list[int]:
+        """Settle every open bet on a market that Polymarket resolved to `outcome`.
+        `resolved_at` is when the bot learned the result (the cycle's clock)."""
         db = self.db
         if db.one(select(market_resolutions.c.market_id).where(market_resolutions.c.market_id == market_id)) is None:
-            db.insert(market_resolutions, market_id=market_id, resolved_at=utcnow(), outcome=outcome, raw=raw)
+            db.insert(market_resolutions, market_id=market_id, resolved_at=resolved_at or utcnow(), outcome=outcome,
+                      raw=raw)
         with db.engine.begin() as conn:
             conn.execute(update(markets).where(markets.c.id == market_id)
                          .values(closed=True, resolved_outcome=outcome))
