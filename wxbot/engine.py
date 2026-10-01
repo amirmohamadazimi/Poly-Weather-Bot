@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import time
+from types import SimpleNamespace
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -17,9 +18,10 @@ from sqlalchemy import and_, desc, or_, select, update
 
 from wxbot.data.polymarket import Bucket, ParsedMarket, resolved_outcome
 from wxbot.data.stations import get_station
+from wxbot.data.validation import validate_forecast, validate_observation
 from wxbot.db import (
-    Database, calibration_params, forecast_snapshots, market_snapshots, markets, paper_bets, predictions,
-    signals, utcnow, weather_observations,
+    Database, calibration_params, forecast_snapshots, forecast_values, market_snapshots, markets, paper_bets,
+    predictions, signals, utcnow, weather_observations,
 )
 from wxbot.execution import portfolio
 from wxbot.model.base import Calibration
@@ -38,6 +40,16 @@ def hours_to_day_end(local_date: str, tz: str, now: datetime) -> float:
     return (end - now).total_seconds() / 3600.0
 
 
+def _parse_time(value) -> datetime | None:
+    if not value:
+        return None
+    t = value if isinstance(value, datetime) else datetime.fromisoformat(value)
+    return t if t.tzinfo else t.replace(tzinfo=timezone.utc)
+
+
+VARIABLES = {"high": "temperature_2m_max", "low": "temperature_2m_min"}
+
+
 class Engine:
     def __init__(self, cfg, db: Database, polymarket, forecaster, observer, predictor, broker, sizer,
                  clock=utcnow):
@@ -50,6 +62,8 @@ class Engine:
         self.broker = broker
         self.sizer = sizer
         self.clock = clock
+        v = cfg.get("validation")
+        self.validation = SimpleNamespace(**(v.as_dict() if v else {}), min_models=cfg.weather.min_models)
 
     # -- orchestration ------------------------------------------------------
     def run_cycle(self) -> dict:
@@ -132,15 +146,40 @@ class Engine:
             except Exception as exc:
                 self.db.log_event("WARNING", "forecasts", f"{code}: {type(exc).__name__}: {exc}")
                 continue
+            runs = {m: _parse_time(t) for m, t in (meta.get("model_runs") or {}).items()}
             for local_date, kind in keys:
                 values = by_kind.get(kind, {}).get(local_date)
                 if values:
-                    self.db.insert(forecast_snapshots, fetched_at=now, source=self.forecaster.source,
-                                   station=code, local_date=local_date, kind=kind, values_c=values, request=meta)
+                    self._store_forecast(st, local_date, kind, values, runs, meta, now)
                     stored += 1
         if stored:
             self.db.set_state("last_weather_update", now.isoformat())
         return {"stations": len(needed), "snapshots": stored}
+
+    def _store_forecast(self, st, local_date: str, kind: str, values: dict, runs: dict, meta: dict,
+                        now: datetime) -> int:
+        """One snapshot row (as before) plus one forecast_values row per model,
+        each with its run time, horizon and validation verdict."""
+        q = validate_forecast(values, runs, now, self.validation)
+        used_runs = [runs[m] for m in q.clean if runs.get(m)]
+        snap_id = self.db.insert(forecast_snapshots, fetched_at=now, source=self.forecaster.source,
+                                 station=st.code, local_date=local_date, kind=kind, values_c=values,
+                                 request=meta, issue_time=min(used_runs) if used_runs else None,
+                                 quality=q.as_dict())
+        day_end = hours_to_day_end(local_date, st.tz, now)
+        for model, value in values.items():
+            run = runs.get(model)
+            horizon = day_end + ((now - run).total_seconds() / 3600 if run else 0.0)
+            self.db.insert(forecast_values, snapshot_id=snap_id, source=self.forecaster.source, model=model,
+                           station=st.code, lat=st.lat, lon=st.lon, variable=VARIABLES[kind],
+                           target_date=local_date, issue_time=run,
+                           issue_time_source="model_run" if run else "unknown",
+                           horizon_hours=round(horizon, 2), value=value if isinstance(value, (int, float)) else None,
+                           unit="C", valid=model in q.clean, problem=q.rejected.get(model), fetched_at=now)
+        if not q.ok or q.rejected:
+            self.db.log_event("WARNING", "validation", f"{st.code} {local_date} {kind}: "
+                              f"errors={q.errors} rejected={q.rejected}", details=q.as_dict())
+        return snap_id
 
     def _latest_forecast(self, station: str, local_date: str, kind: str) -> dict | None:
         fs = forecast_snapshots.c
@@ -168,7 +207,12 @@ class Engine:
             lead_days = (date.fromisoformat(m["local_date"]) - local_today(st.tz, now)).days
             calib = self._calibration(m["station"], m["kind"], lead_days)
             bucket = Bucket(m["bucket_lo"], m["bucket_hi"], m["unit"])
-            pred = self.predictor.predict(bucket, m["kind"], fc["values_c"], lead_days, calib)
+            quality = fc.get("quality") or {"ok": True, "rejected": {}}
+            values = {k: v for k, v in fc["values_c"].items() if k not in quality.get("rejected", {})}
+            if not values:
+                continue
+            pred = self.predictor.predict(bucket, m["kind"], values, lead_days, calib)
+            pred.inputs["data_quality"] = quality
             fetched_at = fc["fetched_at"] if fc["fetched_at"].tzinfo else fc["fetched_at"].replace(tzinfo=timezone.utc)
             pred.inputs["forecast_fetched_at"] = fetched_at.isoformat()
             pred.inputs["forecast_source"] = fc["source"]
@@ -210,6 +254,7 @@ class Engine:
             n_models=len(pred.inputs["model_values_c"]), forecast_age_min=forecast_age, sigma_c=pred.sigma_c,
             market_open=not m["closed"], has_position=portfolio.has_open_position(self.db, m["id"]),
             daily_pnl=portfolio.daily_realized_pnl(self.db, now), initial_bankroll=cfg.bankroll.initial,
+            data_valid=bool(pred.inputs.get("data_quality", {}).get("ok", True)),
         )
         results = rules.evaluate(ctx, cfg)
         fill = None
@@ -311,6 +356,11 @@ class Engine:
         stored = 0
         for kind, days in obs.items():
             for d, (value, n) in days.items():
+                problem = validate_observation(value, n, self.validation)
+                if problem:
+                    self.db.log_event("WARNING", "validation", f"observation {code} {d} {kind} rejected: {problem}",
+                                      details={"value_c": value, "n_reports": n})
+                    continue
                 prev = self.db.one(select(wo.value_c).where(wo.station == code, wo.local_date == d, wo.kind == kind,
                                                             wo.source == self.observer.source).order_by(desc(wo.id)).limit(1))
                 if prev is None or abs(prev["value_c"] - value) > 1e-6:

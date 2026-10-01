@@ -75,6 +75,7 @@ class Context:
     daily_pnl: float
     initial_bankroll: float
     stake: float | None = None   # None during the pre-check, before sizing
+    data_valid: bool = True      # forecast snapshot passed data/validation.py
     extra: dict = field(default_factory=dict)
 
 
@@ -99,6 +100,7 @@ def evaluate(ctx: Context, cfg) -> list[dict]:
         _r("liquidity", (ctx.liquidity or 0) >= s.min_liquidity_usd, ctx.liquidity, f">= {s.min_liquidity_usd}"),
         _r("time_to_resolution", s.min_lead_hours <= ctx.lead_hours <= s.max_lead_hours,
            round(ctx.lead_hours, 1), f"{s.min_lead_hours}..{s.max_lead_hours} h"),
+        _r("data_validation", ctx.data_valid, ctx.data_valid, True),
         _r("data_quality_models", ctx.n_models >= cfg.weather.min_models, ctx.n_models,
            f">= {cfg.weather.min_models}"),
         _r("data_quality_freshness", ctx.forecast_age_min <= cfg.weather.max_forecast_age_minutes,

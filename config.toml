@@ -37,6 +37,14 @@ models = ["ecmwf_ifs025", "gfs_seamless", "icon_seamless", "gem_seamless", "jma_
 min_models = 3              # data-quality: fewer models than this -> no trade
 max_forecast_age_minutes = 180
 
+[validation]
+# Inputs outside these bounds are rejected (and recorded) rather than used.
+min_temp_c = -70.0
+max_temp_c = 60.0
+max_model_run_age_hours = 36   # a model value from an older run is rejected
+outlier_c = 8.0                # >8 C from the other models' median: warning
+min_obs_reports = 18           # METAR reports needed for a daily high/low
+
 [model]
 version = "normal-multimodel-v1"
 # Forecast error standard deviation in degC by lead day, used until the

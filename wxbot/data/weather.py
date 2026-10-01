@@ -14,8 +14,10 @@ from __future__ import annotations
 import csv
 import io
 import logging
+import time
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
+from typing import Protocol
 from zoneinfo import ZoneInfo
 
 from wxbot.data.http import get_json, make_session
@@ -24,6 +26,15 @@ from wxbot.data.stations import Station
 OPEN_METEO = "https://api.open-meteo.com/v1/forecast"
 PREVIOUS_RUNS = "https://previous-runs-api.open-meteo.com/v1/forecast"
 IEM_ASOS = "https://mesonet.agron.iastate.edu/cgi-bin/request/asos.py"
+# Open-Meteo publishes each model dataset's latest run at /data/<dataset>/static/meta.json
+# (field last_run_initialisation_time, unix seconds). Forecast-API model name -> dataset.
+# The "seamless" models blend regional and global runs; the global dataset's run
+# time is used for them, so treat it as the latest run available at fetch time.
+OPEN_METEO_META = "https://api.open-meteo.com/data/{dataset}/static/meta.json"
+OPEN_METEO_DATASETS = {
+    "ecmwf_ifs025": "ecmwf_ifs025", "gfs_seamless": "ncep_gfs013", "icon_seamless": "dwd_icon",
+    "gem_seamless": "cmc_gem_gdps", "jma_seamless": "jma_gsm",
+}
 
 MIN_HOURS_PER_DAY = 20  # a model's day needs this many hourly values to count
 log = logging.getLogger("wxbot.weather")
@@ -73,12 +84,48 @@ def split_model_series(hourly: dict, variable: str, models: list[str]) -> dict[s
     return {m: hourly[f"{variable}_{m}"] for m in models if f"{variable}_{m}" in hourly}
 
 
+class ForecastSource(Protocol):
+    """What the engine needs from a forecast provider. Add a provider by
+    implementing this; nothing else in the pipeline changes."""
+    source: str
+    models: list[str]
+
+    def fetch(self, station: Station, days: int = 5) -> tuple[dict, dict]:
+        """-> ({kind: {local_date: {model: value_c}}}, meta). meta may carry
+        "model_runs": {model: ISO time of the run the values came from}."""
+        ...
+
+
 class OpenMeteoForecast:
     source = "open-meteo"
+    META_TTL_S = 1800
 
     def __init__(self, models: list[str], session=None):
         self.models = list(models)
         self.session = session or make_session()
+        self._runs: dict[str, tuple[float, str | None]] = {}   # model -> (fetched monotonic, iso run)
+
+    def model_runs(self) -> dict[str, str | None]:
+        """Latest run time per model, cached for 30 minutes. A failed or unknown
+        lookup gives None: the value is still used, its run time is unknown."""
+        out = {}
+        for m in self.models:
+            hit = self._runs.get(m)
+            if hit and time.monotonic() - hit[0] < self.META_TTL_S:
+                out[m] = hit[1]
+                continue
+            run = None
+            dataset = OPEN_METEO_DATASETS.get(m)
+            if dataset:
+                try:
+                    ts = get_json(self.session, OPEN_METEO_META.format(dataset=dataset)).get(
+                        "last_run_initialisation_time")
+                    run = datetime.fromtimestamp(int(ts), timezone.utc).isoformat() if ts else None
+                except Exception as exc:  # noqa: BLE001 - metadata is optional
+                    log.warning("run time for %s unavailable: %s", m, exc)
+            self._runs[m] = (time.monotonic(), run)
+            out[m] = run
+        return out
 
     def fetch(self, station: Station, days: int = 5) -> tuple[dict, dict]:
         """-> ({kind: {local_date: {model: value_c}}}, request_meta)."""
@@ -94,7 +141,7 @@ class OpenMeteoForecast:
             for kind in ("high", "low"):
                 for d, v in daily_extreme(times, series, kind).items():
                     out[kind][d][model] = round(v, 2)
-        meta = {"url": OPEN_METEO, "params": params,
+        meta = {"url": OPEN_METEO, "params": params, "model_runs": self.model_runs(),
                 "generationtime_ms": data.get("generationtime_ms"), "timezone": data.get("timezone")}
         return {k: dict(v) for k, v in out.items()}, meta
 
