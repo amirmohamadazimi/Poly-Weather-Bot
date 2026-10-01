@@ -21,8 +21,15 @@ cycle_minutes = 30          # full collect -> predict -> bet -> settle cycle
 observation_hours = 6       # how often station observations are pulled
 autostart = true            # start the autonomous loop when the app starts
 
+[experiment]
+# Recorded in the experiments table the first time a database is used, with the
+# starting bankroll, code version and these settings. One database holds one
+# experiment: a different starting bankroll on an existing database is refused.
+name = "paper-100"
+
 [bankroll]
-initial = 1000.0
+# Virtual dollars. Experiment 1 ($1,000) runs frozen code with its own config.
+initial = 100.0
 
 [markets]
 # Polymarket tag holding the daily city temperature markets.
@@ -104,13 +111,15 @@ slippage = 0.005            # added to the order-book fill price
 
 [sizing]
 method = "fixed_fraction"   # or "fractional_kelly"
-fraction = 0.01             # fixed_fraction: 1% of bankroll per bet
+fraction = 0.02             # fixed_fraction: 2% of equity per bet ($2 of $100)
 kelly_multiplier = 0.25     # fractional_kelly: quarter Kelly
-min_stake = 1.0
+min_stake = 1.0             # smaller stakes are not placed
 max_book_share = 0.25       # take at most 25% of the visible ask depth
 
 [risk]
-max_bet_pct = 0.02          # of current bankroll
-max_open_exposure_pct = 0.30
-max_event_exposure_pct = 0.05   # all buckets of one city-day together
+# Caps on the stake, as fractions of equity (cash + open bets marked to market).
+max_bet_pct = 0.02          # one bet
+max_open_exposure_pct = 0.30    # all open bets, at cost
+max_event_exposure_pct = 0.05   # all buckets of one event (one city, day and high/low)
+max_station_day_exposure_pct = 0.08   # high and low events of one city-day together
 daily_loss_limit_pct = 0.05     # 0 disables

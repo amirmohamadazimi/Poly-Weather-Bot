@@ -23,7 +23,7 @@ def test_full_cycle_places_one_audited_bet(cfg):
     assert len(bets) == 1
     bet = bets[0]
     assert bet["market_id"] == TAIL_MARKET and bet["side"] == "NO" and bet["status"] == "OPEN"
-    assert bet["stake"] == pytest.approx(10.0)          # 1% of $1,000
+    assert bet["stake"] == pytest.approx(2.0)           # 2% of $100
     assert bet["entry_price"] == pytest.approx(0.915)   # NO ask 0.91 + 0.005 slippage
     assert bet["model_prob"] >= 0.8 and bet["edge"] >= 0.05
     # the decision can be reconstructed: bet -> signal -> prediction -> forecast snapshot
@@ -53,21 +53,23 @@ def test_no_duplicate_bets_and_history_not_overwritten(cfg):
 def test_restart_keeps_bankroll_and_settlement(cfg):
     eng = make_engine(cfg)
     eng.run_cycle()
-    before = portfolio.bankroll(eng.db, 1000)
-    assert before.cash == pytest.approx(990.0) and before.equity == pytest.approx(1000.0)
+    before = portfolio.bankroll(eng.db, 100)
+    shares = 2.0 / 0.915
+    assert before.cash == pytest.approx(98.0) and before.book_equity == pytest.approx(100.0)
+    # marked at the NO bid, 1 - YES ask 0.11
+    assert before.market_value == pytest.approx(shares * 0.89) and before.equity == pytest.approx(98 + shares * 0.89)
 
     # "restart": brand-new Database/Engine objects on the same file
     pm = FakePolymarket([london_event()])
     pm.resolved[TAIL_MARKET] = "NO"
     eng2 = make_engine(cfg, db=Database(cfg.app.database_url), pm=pm, clock=Clock(eng.clock.now + timedelta(days=2)))
-    assert portfolio.bankroll(eng2.db, 1000).cash == pytest.approx(990.0)
+    assert portfolio.bankroll(eng2.db, 100).cash == pytest.approx(98.0)
     eng2.run_cycle()
     bet = eng2.db.one(select(paper_bets))
     assert bet["status"] == "WON"
-    shares = 10.0 / 0.915
-    assert bet["payout"] == pytest.approx(shares) and bet["pnl"] == pytest.approx(shares - 10.0)
-    after = portfolio.bankroll(eng2.db, 1000)
-    assert after.cash == pytest.approx(1000 + shares - 10) and after.open_exposure == 0
+    assert bet["payout"] == pytest.approx(shares) and bet["pnl"] == pytest.approx(shares - 2.0)
+    after = portfolio.bankroll(eng2.db, 100)
+    assert after.cash == pytest.approx(100 + shares - 2) and after.open_exposure == 0
     assert bet["bankroll_after"] == pytest.approx(after.equity)
 
 
@@ -78,11 +80,11 @@ def test_losing_bet_and_report(cfg):
     eng.clock.now += timedelta(days=2)
     eng.settle()
     bet = eng.db.one(select(paper_bets))
-    assert bet["status"] == "LOST" and bet["pnl"] == pytest.approx(-10.0)
-    rep = build_report(eng.db, 1000)
+    assert bet["status"] == "LOST" and bet["pnl"] == pytest.approx(-2.0)
+    rep = build_report(eng.db, 100)
     ov = rep["overview"]
-    assert ov["n_settled"] == 1 and ov["win_rate"] == 0 and ov["total_pnl"] == pytest.approx(-10.0)
-    assert ov["max_drawdown"] == pytest.approx(10.0)
+    assert ov["n_settled"] == 1 and ov["win_rate"] == 0 and ov["total_pnl"] == pytest.approx(-2.0)
+    assert ov["max_drawdown"] == pytest.approx(2.0)
     assert "too few" in rep["verdict"][0]
     assert "PAPER TRADING" in to_markdown(rep)
 
@@ -115,7 +117,7 @@ def test_observations_stored_once(cfg):
 def test_export_zip_contains_every_table(cfg):
     eng = make_engine(cfg)
     eng.run_cycle()
-    zf = zipfile.ZipFile(io.BytesIO(export_zip_bytes(eng.db, build_report(eng.db, 1000))))
+    zf = zipfile.ZipFile(io.BytesIO(export_zip_bytes(eng.db, build_report(eng.db, 100))))
     names = set(zf.namelist())
     assert {"paper_bets.csv", "signals.csv", "predictions.csv", "market_price_history.csv", "report.json"} <= names
     assert zf.read("paper_bets.csv").decode().count("\n") == 2
@@ -134,7 +136,7 @@ def test_resolved_market_is_never_bet_again(cfg):
 def test_report_lists_bets_and_status(cfg):
     eng = make_engine(cfg)
     eng.run_cycle()
-    md = to_markdown(build_report(eng.db, 1000))
+    md = to_markdown(build_report(eng.db, 100))
     assert "## Results by market day" in md and "| 2026-09-28 | 1 | 0 | 0 | 1 |" in md
     assert "### 2026-09-28" in md and "Highest temperature in London" in md
     assert "## Bot status" in md and "markets monitored: 11" in md

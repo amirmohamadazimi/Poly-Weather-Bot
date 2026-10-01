@@ -153,6 +153,7 @@ async function loadOverview() {
     ["Win rate (predicted)", `${pct(o.win_rate)} <span class="muted" style="font-size:13px">(${pct(o.expected_win_rate)})</span>`],
     ["Avg model confidence", pct(o.avg_confidence)], ["Avg edge", num(o.avg_edge)],
     ["Cash / open exposure", `${usd(o.cash)} / ${usd(o.open_exposure)}`],
+    ["Open positions at the bid (unrealized P/L)", `${usd(o.market_value)} (${usd(o.unrealized_pnl)})`, cls(o.unrealized_pnl)],
     ["Max drawdown", `${usd(o.max_drawdown)} <span class="muted" style="font-size:13px">(${pct(o.max_drawdown_pct)})</span>`, o.max_drawdown > 0 ? "neg" : ""],
     ["ROI 95% interval", o.roi_95ci ? o.roi_95ci.map(pct).join(" to ") : "needs 5+ settled"],
   ]);
@@ -214,7 +215,7 @@ const lineOpts = t => ({responsive: true, maintainAspectRatio: false, plugins: {
 async function loadPerf() {
   const d = await get("/api/performance");
   const short = t => String(t).slice(5, 16);
-  chart("cBank", {type: "line", data: {labels: d.bankroll.map(r => short(r.t)), datasets: [{data: d.bankroll.map(r => r.equity), pointRadius: 0, borderWidth: 2}]}, options: lineOpts("Bankroll (equity, open bets at cost)")});
+  chart("cBank", {type: "line", data: {labels: d.bankroll.map(r => short(r.t)), datasets: [{data: d.bankroll.map(r => r.equity), pointRadius: 0, borderWidth: 2}]}, options: lineOpts("Bankroll (equity, open bets at the bid)")});
   chart("cPnl", {type: "line", data: {labels: d.cumulative_pnl.map(r => short(r.t)), datasets: [{data: d.cumulative_pnl.map(r => r.pnl), pointRadius: 2, borderWidth: 2}]}, options: lineOpts("Cumulative realized P/L")});
   chart("cDD", {type: "line", data: {labels: d.drawdown.map(r => short(r.t)), datasets: [{data: d.drawdown.map(r => -r.dd), pointRadius: 0, fill: true, borderWidth: 1}]}, options: lineOpts("Drawdown ($)")});
   chart("cWL", {type: "bar", data: {labels: d.cumulative_pnl.map((r, i) => i + 1), datasets: [{data: d.cumulative_pnl.map(r => r.bet_pnl), backgroundColor: d.cumulative_pnl.map(r => r.won ? "#1a7f45" : "#b3261e")}]}, options: lineOpts("Win / loss per settled bet ($)")});

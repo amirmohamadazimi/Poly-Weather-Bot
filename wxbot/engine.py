@@ -26,6 +26,8 @@ from wxbot.db import (
     market_snapshots, markets, paper_bets, predictions, signals, utcnow, weather_observations,
 )
 from wxbot.execution import portfolio
+from wxbot.execution.paper import BrokerRefused
+from wxbot.experiment import ensure_experiment
 from wxbot.features import FEATURE_SET, build_features, climatology_window, observed_history
 from wxbot.model.base import Calibration
 from wxbot.model.normal import default_calibration
@@ -54,6 +56,9 @@ def _parse_time(value) -> datetime | None:
 VARIABLES = {"high": "temperature_2m_max", "low": "temperature_2m_min"}
 # what a shadow prediction keeps of its model's inputs; the rest is on the production prediction
 SHADOW_INPUTS = ("raw_p_yes", "mu_unit", "sigma_unit", "n", "k", "window_days")
+# the cash cap leaves a millionth of a dollar so float rounding in the fill can
+# never make the paper broker refuse a bet sized to the last of the cash
+CASH_MARGIN = 1e-6
 PRICE_HISTORY_TRIES = 3  # fetches per resolved market before its price history is given up
 # the CLOB itself is unreachable: stop this cycle's pass instead of trying every market
 CLOB_DOWN = (requests.ConnectionError, requests.Timeout, requests.exceptions.RetryError)
@@ -76,6 +81,7 @@ class Engine:
         self.validation = SimpleNamespace(**(v.as_dict() if v else {}), min_models=cfg.weather.min_models)
         for change in sync_registry(db, predictor, self.shadows, self.clock()):
             db.log_event("INFO", "model_registry", change)
+        self.experiment = ensure_experiment(db, cfg, self.clock())
 
     # -- orchestration ------------------------------------------------------
     def run_cycle(self) -> dict:
@@ -353,19 +359,23 @@ class Engine:
             token = m["yes_token"] if side == "YES" else m["no_token"]
             asks = self.pm.get_asks(token)
             s, r = cfg.strategy, cfg.risk
-            equity = bank.equity
+            equity = bank.equity  # open positions marked to market
             caps = {
                 "sizer": self.sizer.stake(equity, model_prob, top_price),
                 "max_bet": r.max_bet_pct * equity,
                 "open_exposure_room": r.max_open_exposure_pct * equity - bank.open_exposure,
                 "event_exposure_room": r.max_event_exposure_pct * equity
                 - portfolio.event_exposure(self.db, m["event_id"]),
-                "cash": bank.cash,
+                # high and low markets of one city-day move with the same weather
+                "station_day_exposure_room": r.max_station_day_exposure_pct * equity
+                - portfolio.station_day_exposure(self.db, m["station"], m["local_date"]),
+                "cash": bank.cash - CASH_MARGIN,
                 "book_capacity": rules.book_capacity(asks, s.slippage, s.fee_rate, cfg.sizing.max_book_share),
             }
             budget = max(0.0, min(caps.values()))
-            sizing = {"sizer": self.sizer.name, "equity": round(equity, 2),
-                      "caps": {k: round(v, 2) for k, v in caps.items()}, "budget": round(budget, 2)}
+            sizing = {"sizer": self.sizer.name, "equity": round(equity, 4), "cash": round(bank.cash, 4),
+                      "open_exposure": round(bank.open_exposure, 4), "caps": {k: round(v, 4) for k, v in caps.items()},
+                      "binding_cap": min(caps, key=caps.get), "budget": round(budget, 4)}
             fill = rules.simulate_fill(asks, budget, s.slippage, s.fee_rate, cfg.sizing.max_book_share)
             ctx.entry_price = fill.avg_price if fill.shares else None
             ctx.stake = fill.total
@@ -389,13 +399,33 @@ class Engine:
             proposed_stake=ctx.stake, decision=decision,
             reason="all rules passed" if not bad else "failed: " + ", ".join(bad), rule_results=results_out)
         if decision == "BET":
-            bet_id = self.broker.place(signal_id=sig_id, market=m, side=side, fill=fill, model_prob=raw_prob,
-                                       market_prob=market_prob, edge=edge, ev=ev, confidence=model_prob)
+            try:
+                bet_id = self.broker.place(signal_id=sig_id, market=m, side=side, fill=fill, model_prob=raw_prob,
+                                           market_prob=market_prob, edge=edge, ev=ev, confidence=model_prob,
+                                           sizing=sizing, market_snapshot=self._trade_snapshot(snap, side, asks))
+            except BrokerRefused as exc:
+                with self.db.engine.begin() as conn:
+                    conn.execute(update(signals).where(signals.c.id == sig_id).values(
+                        decision="NO_BET", reason=f"paper broker refused: {exc}"))
+                return False
             self.db.log_event("INFO", "paper_bet", f"bet #{bet_id}: {side} '{m['question']}' "
                               f"${fill.total:.2f} @ {fill.avg_price:.3f} (model {raw_prob:.2f}, "
                               f"calibrated {model_prob:.2f})")
             return True
         return False
+
+    @staticmethod
+    def _trade_snapshot(snap: dict, side: str, asks: list) -> dict:
+        """The quotes when a bet was placed: the market snapshot used for the
+        decision, the held side's bid/ask/mid, and the order book's best ask."""
+        bid, ask = snap.get("best_bid"), snap.get("best_ask")
+        side_bid = bid if side == "YES" else (None if ask is None else round(1 - ask, 6))
+        side_ask = ask if side == "YES" else (None if bid is None else round(1 - bid, 6))
+        return {"snapshot_id": snap.get("id"), "ts": snap["ts"].isoformat() if snap.get("ts") else None,
+                "yes_bid": bid, "yes_ask": ask, "yes_price": snap.get("yes_price"),
+                "liquidity": snap.get("liquidity"), "side": side, "bid": side_bid, "ask": side_ask,
+                "mid": None if side_bid is None or side_ask is None else round((side_bid + side_ask) / 2, 6),
+                "book_best_ask": asks[0].price if asks else None, "book_levels": len(asks)}
 
     # -- 5. settlement ------------------------------------------------------
     def settle(self) -> dict:

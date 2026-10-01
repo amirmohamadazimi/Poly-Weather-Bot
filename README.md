@@ -21,7 +21,7 @@ python main.py
 Or with [uv](https://docs.astral.sh/uv/), which installs the exact locked
 versions from `uv.lock`: `uv sync` then `uv run python main.py`.
 
-Open <http://localhost:8000>. The bot starts with a virtual $1,000 and runs a
+Open <http://localhost:8000>. The bot starts with a virtual $100 and runs a
 cycle every 30 minutes. Stop it with Ctrl+C; everything is kept in
 `data/wxbot.sqlite3`, so it picks up where it left off on restart.
 
@@ -241,14 +241,36 @@ probabilities stay in use.
 
 ### Sizing and risk
 
-`fixed_fraction` (1% of equity) by default; `fractional_kelly` (quarter Kelly) is
-available with `[sizing] method`. The stake is then capped by: 2% of equity per
-bet, 30% total open exposure, 5% per city-day event, available cash, and the
-visible order-book depth.
+The bankroll starts at a virtual $100. `fixed_fraction` (2% of equity, so $2
+per bet at the start) is the default; `fractional_kelly` (quarter Kelly) is
+available with `[sizing] method`. Stakes under $1 are not placed. The stake is
+then capped by: 2% of equity per bet, 30% total open exposure, 5% per event
+(all buckets of one city, day and high/low), 8% per city-day (its high and low
+events together, since the same weather decides both), available cash, and the
+visible order-book depth. Each bet stores every cap, the one that bound, the
+budget and the order-book levels taken (`paper_bets.sizing`), plus the quotes
+it traded on (`paper_bets.market_snapshot`).
+
+Equity counts open bets **marked to market**: at the best bid of the side held
+in the latest market snapshot (for NO, 1 − the YES ask), which is what selling
+it would fetch now. Without a bid the side's last price is used, and without a
+snapshot the bet stays at cost. The report lists every open position with its
+cost, mark, value and unrealized P/L.
+
+Cash can never go negative: the paper broker refuses, and logs, any fill that
+costs more than the cash the ledger holds, is empty, is not a number, or is
+priced above $1 a share. A refused fill turns its signal into a NO_BET.
+
+The first start on a database records the experiment in `experiments`: its
+name (`[experiment] name`), starting bankroll, start time, code version
+(`WXBOT_GIT_REF` or `GITHUB_SHA`) and settings, with passwords and database
+credentials removed. The report names it. A database holds one experiment, so
+starting it with a different bankroll is refused.
 
 ## Evaluation
 
-The dashboard and `python main.py report` show bankroll, P/L, ROI on staked
+The dashboard and `python main.py report` show bankroll (cash, open positions
+at cost and at the bid, realized and unrealized P/L), P/L, ROI on staked
 money with a bootstrap 95% interval, win rate against the win rate the model
 predicted, drawdown, and **calibration of every prediction on every resolved
 market** (not only the ones bet on) with the market's own Brier score as a
@@ -340,7 +362,8 @@ wxbot/features.py           the feature set every model sees
 wxbot/calibration/          isotonic and Platt probability calibration, walk-forward fit and approval
 wxbot/history.py            loads past observations for the climatology baseline
 wxbot/strategy/             betting rules, fill simulation, sizing
-wxbot/execution/            paper broker, bankroll ledger, live-trading guard
+wxbot/execution/            paper broker (cash check), bankroll ledger and mark-to-market, live-trading guard
+wxbot/experiment.py         records which experiment a database holds
 wxbot/evaluation/           metrics (ROI, drawdown, Brier, log loss, ECE, model comparison)
 wxbot/engine.py             one cycle: collect -> predict -> bet -> settle
 wxbot/runner.py             background loop
@@ -364,4 +387,3 @@ Run the tests with `pip install -r requirements-dev.txt && pytest` (or `uv run p
   yet verified, so it is disabled. Other stations can be added in `stations.py`.
 * METAR hourly reports can miss a short peak between reports; Weather
   Underground uses the same reports, so this mostly cancels out.
-* Open bets are valued at cost until they settle (no mark-to-market).

@@ -28,6 +28,10 @@ ADDED_COLUMNS = [
     ("predictions", "calibrated_prob", Float()),                     # v2 M5
     ("predictions", "calibrator_version", String(60)),               # v2 M5
     ("signals", "calibrated_prob", Float()),                         # v2 M5
+    ("paper_bets", "sizing", JSON()),                                # v2 M6
+    ("paper_bets", "market_snapshot", JSON()),                       # v2 M6
+    ("bankroll_snapshots", "market_value", Float()),                 # v2 M6
+    ("bankroll_snapshots", "unrealized_pnl", Float()),               # v2 M6
 ]
 
 

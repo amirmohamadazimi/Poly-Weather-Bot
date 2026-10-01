@@ -17,7 +17,8 @@ others, and a failure in one stage is logged and does not stop the rest.
 | Model registry | `wxbot/model/registry.py` (`sync_registry`, at engine start) | `model_versions` |
 | Market pricing and signal | `wxbot/strategy/rules.py` (`simulate_fill`, `evaluate`), on the calibrated probability | `signals` (raw and calibrated probability) |
 | Risk and sizing | `wxbot/strategy/sizing.py`, `wxbot/execution/portfolio.py` | `signals.proposed_stake`, `rule_results` |
-| Paper trading | `wxbot/execution/paper.py` (`PaperBroker`) | `paper_bets`, `bankroll_snapshots` |
+| Paper trading | `wxbot/execution/paper.py` (`PaperBroker`: refuses fills that would overdraw cash), `wxbot/execution/portfolio.py` (ledger, mark-to-market) | `paper_bets` (with sizing and quotes), `bankroll_snapshots` |
+| Experiment identity | `wxbot/experiment.py` (`ensure_experiment`, at engine start) | `experiments` |
 | Resolution and settlement | `Engine.settle` | `market_resolutions`, `paper_bets`, `markets.closed_time` |
 | Price history (after resolution) | `Engine._store_price_histories`, `PolymarketClient.get_price_history` | `market_price_history` |
 | Observations | `wxbot/data/weather.py` (`IEMObservations`) | `weather_observations` |

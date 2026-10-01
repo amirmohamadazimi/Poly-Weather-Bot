@@ -24,9 +24,9 @@ Legend: **Have** = exists and is tested · **Partial** = exists but is missing w
 | 7 | Probability calibration | Have | Station bias/σ fitted walk-forward; isotonic and Platt calibrators fitted walk-forward and approved only when they beat raw probabilities on a time-ordered holdout (Brier, log loss, bootstrap); calibrated probability on every prediction and signal; log loss, ECE and reliability bins, raw and calibrated (v2 M5) | Reliability-diagram charts on the dashboard (M7) |
 | 8 | Market edge | Have | Model vs implied probability, edge, EV after slippage and fees | No gap |
 | 9 | Betting signal | Partial | All 80%/edge/EV/liquidity/uncertainty/time/exposure rules on the calibrated probability, each recorded with value and threshold; the raw, calibrated and market probabilities on every signal (v2 M5) | A rule on the model's track record in similar situations. Add the readable decision card |
-| 10 | $100 bankroll | Partial | A persistent ledger-derived bankroll; cash, exposure, equity, realized P/L, drawdown | Starting bankroll is $1,000 (config). No mark-to-market unrealized P/L. A tested non-negative-cash invariant |
-| 11 | Risk management | Partial | Per-bet, total, per-event and cash caps; daily loss limit; sizing recorded on signals | Correlated-exposure cap (same city/day across events, same region); sizing method recorded per bet |
-| 12 | Paper engine | Have | Fills walk the real order book; the book at entry is stored; settlement and P/L; no real orders possible | Mark-to-market while open (see 10) |
+| 10 | $100 bankroll | Have | A persistent ledger-derived $100 bankroll; cash, exposure, open positions marked at the bid, realized and unrealized P/L, equity, drawdown; the paper broker refuses any fill that would make cash negative (v2 M6) | No gap |
+| 11 | Risk management | Partial | Per-bet, total, per-event, per-city-day (high and low together) and cash caps; daily loss limit; every cap and the binding one recorded on each bet (v2 M6) | A regional correlation cap (neighbouring cities) |
+| 12 | Paper engine | Have | Fills walk the real order book; the book and quotes at entry are stored; settlement and P/L; marked to market while open; no real orders possible | No gap |
 | 13 | Learning from mistakes | Missing | Every prediction stores inputs, model version, forecast and market price | Error classification after resolution, and recurring-failure analysis by location, lead, variable, extremes, disagreement, liquidity and model version |
 | 14 | Model versioning | Have | `model_versions` registry (version, calibration version, feature set, params, role); every prediction carries its model version, role and feature set (v2 M4) | Calibrator fits are versioned in `prob_calibrators` and every prediction records the one it used (v2 M5) |
 | 15 | Continuous learning | Missing | Calibration refits only on the first run | A retrain → validate → compare with production → approval rule → deploy/rollback pipeline |
@@ -52,7 +52,7 @@ Legend: **Have** = exists and is tested · **Partial** = exists but is missing w
 | 3 | Polymarket data pipeline | Have | Done on `v2-m3-market-data`: outcomes, creation/close time, per-market snapshots, price history, resolution-criteria checks |
 | 4 | Basic prediction model | Have | Done on `v2-m4-prediction-models`: climatology and raw-forecast baselines, model registry, side-by-side scoring |
 | 5 | Probability calibration | Have | Done on `v2-m5-calibration`: isotonic/Platt layer with walk-forward approval, calibrated probability through to signals, log loss, ECE, reliability data |
-| 6 | $100 paper engine | Partial | $100 experiment config, mark-to-market, correlated exposure, non-negative cash invariant, separate experiment ids |
+| 6 | $100 paper engine | Have | Done on `v2-m6-paper-engine`: $100 defaults, mark-to-market, city-day exposure cap, non-negative cash invariant, experiments table |
 | 7 | Dashboard | Partial | Calibrated probability, portfolio, search, new charts, health fields |
 | 8 | Historical backtesting | Partial | Baselines vs model vs market, with historical prices |
 | 9 | Error analysis and learning | Missing | Error classes, failure patterns, retrain/approve/rollback pipeline |

@@ -18,9 +18,10 @@ so the database records what was known at each moment.
 | `forecast_values` | model value per fetch | source, model, station, lat/lon, variable, target_date, issue_time and issue_time_source (model_run or unknown), horizon_hours, value, unit, valid, problem |
 | `weather_observations` | station × day × kind | value_c (observed high or low), n_reports, source |
 | `signals` | market per cycle | side, model_prob (raw), calibrated_prob (what the rules used; from v2 M5), market_prob, entry_price, edge, EV, proposed_stake, decision, reason, rule_results |
-| `paper_bets` | simulated bet | signal_id, side, entry_price, shares, stake, fee, fill (order-book levels), status, outcome, payout, pnl, bankroll_after, mode |
+| `paper_bets` | simulated bet | signal_id, side, entry_price, shares, stake, fee, fill (order-book levels), status, outcome, payout, pnl, bankroll_after, mode, sizing (from v2 M6: sizer, equity, cash, open exposure, every cap, the binding cap, budget, fill levels), market_snapshot (from v2 M6: the snapshot's YES bid/ask/price and liquidity, the held side's bid/ask/mid, the order book's best ask) |
 | `market_resolutions` | resolved market | outcome, raw API response |
-| `bankroll_snapshots` | bankroll change | cash, open_exposure, equity, realized_pnl, reason |
+| `bankroll_snapshots` | bankroll change | cash, open_exposure (at cost), market_value (open bets at the bid of the side held), unrealized_pnl, equity (cash + market value from v2 M6; cash + open exposure before), realized_pnl, reason |
+| `experiments` | experiment (one per database) | name, initial_bankroll, started_at (first bankroll snapshot, or the first start), git_ref, config (settings at the start, secrets removed), created_at |
 | `calibration_params` | station × kind × lead | bias_c, sigma_c, n, fit window, backtest_run_id |
 | `backtest_runs` | backtest | params, report |
 | `system_events` | log event (info and up) | level, component, message, details |
