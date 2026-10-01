@@ -19,7 +19,7 @@ Legend: **Have** = exists and is tested · **Partial** = exists but is missing w
 | 2 | Architecture | Partial | A pipeline of collect → forecast → predict → signal → risk → paper → settle → evaluate; swappable model and broker classes | No separate data-validation, feature, calibration, error-analysis or model-improvement stages |
 | 3 | GitHub-first repo | Partial | Git, CI tests, README, .env.example, Dockerfile, compose, a .gitignore with no secrets | LICENSE, pyproject/uv.lock, `config/`, `docs/`, `scripts/`, `migrations/`, `notebooks/`; README sections on DB structure, learning and reproducing experiments |
 | 4 | Data collection | Partial | Append-only forecast snapshots (source, station, date, per-model values, fetch time); METAR highs and lows from IEM | The forecast's issue (model run) time and horizon aren't stored as columns. Only one provider (Open-Meteo, 5 models). No validation stage or lat/lon on rows. Observations are daily extremes only |
-| 5 | Polymarket layer | Partial | Automatic discovery, question, description, resolution source, bucket/station/unit parsing, order-book snapshots, resolution result | Outcomes, volume over time, market creation time, historical price series (CLOB prices-history), and an explicit, tested resolution-criteria check (station, rounding, unit, source) per market |
+| 5 | Polymarket layer | Have | Discovery; question, description, outcomes, creation/end/close time, resolution source and result; bucket/station/unit parsing; snapshots of price, liquidity and volume for every market; a tested resolution-criteria check (extreme, unit, date, whole-degree precision, source, station code) that makes mismatching markets untradeable; resolved markets' CLOB price history (v2 M3) | Snapshots only at cycle times (no tick data); price history is YES only |
 | 6 | Prediction engine | Partial | One interpretable model: a bias-corrected multi-model normal | Climatology baseline, a raw-forecast baseline, and a side-by-side model comparison. Logistic, GBM and Bayesian models come later |
 | 7 | Probability calibration | Partial | Station bias/σ fitted walk-forward; Brier; reliability bins | A probability-calibration layer (isotonic/Platt) stored as a calibrated probability; log loss; ECE; reliability diagrams |
 | 8 | Market edge | Have | Model vs implied probability, edge, EV after slippage and fees | No gap |
@@ -49,7 +49,7 @@ Legend: **Have** = exists and is tested · **Partial** = exists but is missing w
 |---|---|---|---|
 | 1 | Working local app | Have | Repo foundations PR: pyproject/uv, LICENSE, docs/, README gaps, and pinning the $1,000 experiment to a frozen tag |
 | 2 | Weather-data pipeline | Partial | Forecast revisions table (issue time, horizon, per-model rows, lat/lon), validation stage, source interface for a second provider |
-| 3 | Polymarket data pipeline | Partial | Outcomes, volume, creation time, price history, resolution-criteria checks |
+| 3 | Polymarket data pipeline | Have | Done on `v2-m3-market-data`: outcomes, creation/close time, per-market snapshots, price history, resolution-criteria checks |
 | 4 | Basic prediction model | Partial | Climatology and raw-forecast baselines, model registry, side-by-side scoring |
 | 5 | Probability calibration | Partial | Isotonic/Platt layer, calibrated probability through to signals, log loss, ECE, reliability data |
 | 6 | $100 paper engine | Partial | $100 experiment config, mark-to-market, correlated exposure, non-negative cash invariant, separate experiment ids |

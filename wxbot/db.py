@@ -68,6 +68,27 @@ forecast_snapshots = Table(
     Column("quality", JSON),                          # validation result, see data/validation.py
 )
 
+market_price_history = Table(  # CLOB traded-price series, stored once a market resolves
+    "market_price_history", metadata,          # a point only where the price changed: it holds until the next
+    Column("id", Integer, primary_key=True),
+    Column("market_id", String(40), ForeignKey("markets.id"), index=True),
+    Column("token", String(3), nullable=False),        # YES
+    Column("t", DateTime(timezone=True), nullable=False),
+    Column("price", Float, nullable=False),
+    _ts("fetched_at"),
+)
+
+market_criteria_history = Table(  # earlier rules text of a market, written when Polymarket edits it
+    "market_criteria_history", metadata,          # (markets holds the current text)
+    Column("id", Integer, primary_key=True),
+    Column("market_id", String(40), ForeignKey("markets.id"), index=True),
+    _ts("replaced_at"),                                # first seen with the new text
+    Column("last_seen", DateTime(timezone=True)),      # last seen with this text
+    Column("description", Text),
+    Column("resolution_source", Text),
+    Column("criteria", JSON),                          # parse_criteria() output incl. problems
+)
+
 forecast_values = Table(  # one row per model value: what each model said, from which run
     "forecast_values", metadata,
     Column("id", Integer, primary_key=True),
@@ -113,6 +134,11 @@ markets = Table(
     Column("skip_reason", Text),
     Column("closed", Boolean, default=False),
     Column("resolved_outcome", String(3)),            # YES | NO
+    Column("outcomes", JSON),                         # as listed by Polymarket, e.g. ["Yes", "No"]
+    Column("pm_created_at", DateTime(timezone=True)),  # when Polymarket created the market
+    Column("criteria", JSON),                         # parsed resolution rules + any mismatch found
+    Column("closed_time", DateTime(timezone=True)),   # Polymarket closedTime, set at settlement
+    Column("price_history_tries", Integer),           # failed or empty price-history fetches so far
     _ts("first_seen"),
     _ts("last_seen"),
 )
@@ -235,9 +261,9 @@ backtest_runs = Table(
 )
 
 EXPORT_TABLES = [
-    "paper_bets", "signals", "predictions", "forecast_snapshots", "markets", "market_snapshots",
-    "market_resolutions", "bankroll_snapshots", "weather_observations", "calibration_params",
-    "backtest_runs", "system_events",
+    "paper_bets", "signals", "predictions", "forecast_snapshots", "forecast_values", "markets",
+    "market_snapshots", "market_price_history", "market_criteria_history", "market_resolutions", "bankroll_snapshots",
+    "weather_observations", "calibration_params", "backtest_runs", "system_events",
 ]
 
 
