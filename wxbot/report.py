@@ -84,14 +84,22 @@ def verdict(ov: dict, cal: dict) -> list[str]:
 
 def to_markdown(rep: dict) -> str:
     ov, cal = rep["overview"], rep["prediction_calibration"]
+    exp = ov.get("experiment")
     lines = [
         "# Paper-trading performance report", "",
         f"Mode: **{ov['mode']}** · real money used: **${ov['real_money']:.2f}**", "",
+        *([f"Experiment: **{exp['name']}** · started {str(exp['started_at'])[:16]} UTC · starting bankroll "
+           f"${exp['initial_bankroll']:,.2f}" + (f" · code {exp['git_ref'][:12]}" if exp.get("git_ref") else ""), ""]
+          if exp else []),
         "## Verdict", "", *[f"- {n}" for n in rep["verdict"]], "",
         "## Results", "",
         "| Metric | Value |", "|---|---:|",
         f"| Starting bankroll | ${ov['starting_bankroll']:.2f} |",
-        f"| Equity (open bets at cost) | ${ov['equity']:.2f} |",
+        f"| Equity (open bets at the bid) | ${ov['equity']:.2f} |",
+        f"| Cash available | ${ov['cash']:.2f} |",
+        f"| Open positions: count / cost / value at the bid | {ov['n_open_positions']} / "
+        f"${ov['open_exposure']:.2f} / ${ov['market_value']:.2f} |",
+        f"| Realized / unrealized P/L | ${ov['realized_pnl']:.2f} / ${ov['unrealized_pnl']:.2f} |",
         f"| Total P/L | ${ov['total_pnl']:.2f} |",
         f"| Return on bankroll | {_pct(ov['return_on_bankroll'])} |",
         f"| ROI on settled stakes | {_pct(ov['roi_on_staked'])} |",
@@ -115,6 +123,20 @@ def to_markdown(rep: dict) -> str:
                   "| Calibrated bin | n | Mean calibrated | Observed |", "|---|---:|---:|---:|",
                   *[f"| {b['bin']} | {b['n']} | {_pct(b['mean_pred'])} | {_pct(b['observed'])} |"
                     for b in cal["bins_calibrated"]]]
+    positions = ov.get("positions") or []
+    if positions:
+        lines += ["", "## Open positions", "",
+                  "Valued at the best bid of the side held in the latest market snapshot "
+                  "(the side's last price when there is no bid, cost when there is no snapshot).", "",
+                  "| Bet | Market | Side | Shares | Cost | Entry | Mark | Value | Unrealized |",
+                  "|---:|---|---|---:|---:|---:|---:|---:|---:|"]
+        for p in positions:
+            mark = "cost" if p["mark_price"] is None else f"{p['mark_price']:.3f}"
+            if p["marked_by"] == "price":
+                mark += " (price)"
+            lines.append(f"| {p['bet_id']} | {p['question'] or p['market_id']} | {p['side']} | {p['shares']:.2f} | "
+                         f"${p['stake']:.2f} | {p['entry_price']:.3f} | {mark} | ${p['value']:.2f} | "
+                         f"${p['unrealized_pnl']:.2f} |")
     cals = rep.get("calibrators")
     if cals:
         lines += ["", "## Probability calibrators (latest fit)", "",

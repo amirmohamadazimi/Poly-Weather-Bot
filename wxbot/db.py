@@ -259,6 +259,8 @@ paper_bets = Table(
     Column("pnl", Float),
     Column("bankroll_after", Float),
     Column("mode", String(8), nullable=False, default="paper"),
+    Column("sizing", JSON),                           # sizer, equity, every cap, budget, fill levels (v2 M6)
+    Column("market_snapshot", JSON),                  # quotes when the bet was placed (v2 M6)
 )
 
 market_resolutions = Table(
@@ -275,9 +277,22 @@ bankroll_snapshots = Table(
     _ts("ts", index=True),
     Column("cash", Float, nullable=False),
     Column("open_exposure", Float, nullable=False),   # stakes of open bets, at cost
-    Column("equity", Float, nullable=False),          # cash + open exposure
+    Column("equity", Float, nullable=False),          # cash + open bets marked to market (at cost before v2 M6)
     Column("realized_pnl", Float, nullable=False),
     Column("reason", String(40)),
+    Column("market_value", Float),                    # open bets at the bid of the side held (v2 M6)
+    Column("unrealized_pnl", Float),                  # market_value - open_exposure (v2 M6)
+)
+
+experiments = Table(  # what this database is: one experiment per database
+    "experiments", metadata,
+    Column("id", Integer, primary_key=True),
+    Column("name", String(60), nullable=False),
+    Column("initial_bankroll", Float, nullable=False),
+    Column("started_at", DateTime(timezone=True), nullable=False),
+    Column("git_ref", String(80)),                    # WXBOT_GIT_REF or GITHUB_SHA when the row was created
+    Column("config", JSON),                           # settings at the start, secrets removed
+    _ts("created_at"),
 )
 
 calibration_params = Table(
@@ -308,7 +323,7 @@ EXPORT_TABLES = [
     "paper_bets", "signals", "predictions", "forecast_snapshots", "forecast_values", "markets",
     "market_snapshots", "market_price_history", "market_criteria_history", "market_resolutions", "bankroll_snapshots",
     "weather_observations", "calibration_params", "backtest_runs", "model_versions", "prob_calibrators",
-    "system_events",
+    "experiments", "system_events",
 ]
 
 

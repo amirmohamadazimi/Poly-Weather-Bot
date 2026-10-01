@@ -11,7 +11,10 @@
 ## Experiment 2: $100, 30 days (planned)
 
 Starts once the v2 milestones it needs (M2–M6 in [roadmap.md](roadmap.md)) are
-merged. It will run from `main` with its own state branch. Its first run also
+merged. It uses the defaults in `config.toml`: $100, 2% ($2) per bet, at least
+$1 a bet, and the exposure caps listed in the README. The first start records it
+in the `experiments` table (name, starting bankroll, start time, commit and
+settings), and REPORT.md names it. It will run from `main` with its own state branch. Its first run also
 loads observation history (`python main.py climatology --if-missing`) so the
 climatology baseline can be scored from day one.
 

@@ -83,6 +83,7 @@ def bootstrap_roi_ci(stakes: list[float], pnls: list[float], n: int = 2000, seed
 
 def overview(db: Database, initial: float) -> dict:
     from wxbot.execution.portfolio import bankroll
+    from wxbot.experiment import current
     bets = db.rows(select(paper_bets).order_by(paper_bets.c.id))
     settled = [b for b in bets if b["status"] in ("WON", "LOST")]
     wins = [b for b in settled if b["status"] == "WON"]
@@ -95,10 +96,27 @@ def overview(db: Database, initial: float) -> dict:
     probs = [b["model_prob"] if b["confidence"] is None else b["confidence"] for b in settled]
     outs = [1 if b["status"] == "WON" else 0 for b in settled]
     ci = bootstrap_roi_ci([b["stake"] for b in settled], [b["pnl"] for b in settled])
+    questions = {r["id"]: r for r in db.rows(select(markets.c.id, markets.c.question, markets.c.local_date)
+                                              .where(markets.c.id.in_([p.market_id for p in bank.positions])))}
+    positions = [{
+        "bet_id": p.bet_id, "market_id": p.market_id, "question": questions.get(p.market_id, {}).get("question"),
+        "local_date": questions.get(p.market_id, {}).get("local_date"), "side": p.side,
+        "shares": round(p.shares, 4), "stake": round(p.stake, 4), "entry_price": round(p.entry_price, 4),
+        "mark_price": None if p.mark_price is None else round(p.mark_price, 6), "marked_by": p.marked_by,
+        "value": round(p.value, 4),
+        "unrealized_pnl": round(p.unrealized_pnl, 4),
+    } for p in bank.positions]
+    exp = current(db)
     return {
         "mode": "PAPER TRADING", "real_money": 0.0,
-        "starting_bankroll": initial, "cash": bank.cash, "open_exposure": bank.open_exposure,
+        "experiment": exp and {k: exp[k] for k in ("name", "initial_bankroll", "started_at", "git_ref")},
+        "starting_bankroll": initial, "cash": bank.cash, "available_cash": bank.cash,
+        "open_exposure": bank.open_exposure, "market_value": bank.market_value,
+        "unrealized_pnl": bank.unrealized_pnl, "book_equity": bank.book_equity,
+        # equity and total P/L count open positions at the bid of the side held
         "equity": bank.equity, "total_pnl": bank.equity - initial, "realized_pnl": pnl,
+        "n_open_positions": len(positions), "positions": positions,
+        "marked_by": {k: sum(p["marked_by"] == k for p in positions) for k in ("bid", "price", "cost")},
         "roi_on_staked": pnl / staked if staked else None,
         "return_on_bankroll": (bank.equity - initial) / initial,
         "roi_95ci": ci,

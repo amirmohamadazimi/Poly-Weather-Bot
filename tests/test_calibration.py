@@ -250,6 +250,7 @@ def test_an_approved_calibrator_drives_confidence_edge_and_ev(cfg):
     db.insert(prob_calibrators, version="platt-test", method="platt", model_version=MODEL,
               fitted_at=NOW - timedelta(hours=1), params={"a": 0.0, "b": -10.0}, approved=True, selected=True)
     db.set_state("last_calibration_fit", (NOW - timedelta(hours=1)).isoformat())
+    cfg._data["risk"].update(max_event_exposure_pct=1.0, max_station_day_exposure_pct=1.0)  # every bucket may bet
     eng = make_engine(cfg, db=db)
     eng.run_cycle()
     preds = db.rows(select(predictions).where(predictions.c.role == "production"))
