@@ -20,8 +20,8 @@ from wxbot.data.polymarket import Bucket, ParsedMarket, parse_time, resolved_out
 from wxbot.data.stations import get_station
 from wxbot.data.validation import validate_forecast, validate_observation
 from wxbot.db import (
-    Database, calibration_params, forecast_snapshots, forecast_values, market_price_history, market_snapshots,
-    markets, paper_bets, predictions, signals, utcnow, weather_observations,
+    Database, calibration_params, forecast_snapshots, forecast_values, market_criteria_history, market_price_history,
+    market_snapshots, markets, paper_bets, predictions, signals, utcnow, weather_observations,
 )
 from wxbot.execution import portfolio
 from wxbot.model.base import Calibration
@@ -48,6 +48,7 @@ def _parse_time(value) -> datetime | None:
 
 
 VARIABLES = {"high": "temperature_2m_max", "low": "temperature_2m_min"}
+EMPTY_HISTORY_TRIES = 3  # resolved markets whose CLOB history comes back empty
 
 
 class Engine:
@@ -117,11 +118,19 @@ class Engine:
             skip_reason=pm.skip_reason, closed=pm.closed, last_seen=now,
             outcomes=pm.outcomes, pm_created_at=pm.created_at, criteria=pm.criteria,
         )
+        mch = market_criteria_history.c
         with self.db.engine.begin() as conn:
             # a market we already saw close/resolve never re-opens
             upd = {**values, "closed": or_(markets.c.closed, pm.closed)}
             if conn.execute(update(markets).where(markets.c.id == pm.id).values(**upd)).rowcount == 0:
                 conn.execute(markets.insert().values(id=pm.id, first_seen=now, **values))
+            # markets.criteria holds the latest text; keep every version the bot has seen
+            last = conn.execute(select(mch.description, mch.resolution_source).where(mch.market_id == pm.id)
+                                .order_by(desc(mch.id)).limit(1)).first()
+            if last is None or tuple(last) != (pm.description, pm.resolution_source):
+                conn.execute(market_criteria_history.insert().values(
+                    market_id=pm.id, seen_at=now, description=pm.description,
+                    resolution_source=pm.resolution_source, criteria=pm.criteria))
 
     def _open_tradeable_markets(self) -> list[dict]:
         rows = self.db.rows(select(markets).where(markets.c.tradeable.is_(True), markets.c.closed.is_(False)))
@@ -304,12 +313,13 @@ class Engine:
 
     # -- 4. settlement ------------------------------------------------------
     def settle(self) -> dict:
-        """Ask Polymarket about every market with an open bet or a past date."""
+        """Ask Polymarket about every market with an open bet or a past date.
+        Untradeable markets are included so every market gets its result and close time."""
         now = self.clock()
         pb, mk = paper_bets.c, markets.c
         ids = {r["market_id"] for r in self.db.rows(select(pb.market_id).where(pb.status == "OPEN"))}
         cutoff = (now - timedelta(days=1)).date().isoformat()
-        for r in self.db.rows(select(mk.id).where(and_(mk.tradeable.is_(True), mk.resolved_outcome.is_(None),
+        for r in self.db.rows(select(mk.id).where(and_(mk.kind.is_not(None), mk.resolved_outcome.is_(None),
                                                        mk.local_date <= cutoff, mk.local_date >= (now - timedelta(days=10)).date().isoformat()))):
             ids.add(r["id"])
         settled = checked = 0
@@ -334,15 +344,25 @@ class Engine:
 
     def _store_price_histories(self, now: datetime) -> int:
         """Price series for recently resolved markets that do not have one yet.
-        A failed fetch is retried next cycle, for as long as the market is in the window."""
+        A failed fetch stops this cycle's pass (the CLOB is likely down) and is
+        retried next cycle; an empty series is asked for at most EMPTY_HISTORY_TRIES times."""
         if not self.cfg.markets.get("store_price_history", True):
             return 0
         mk, ph = markets.c, market_price_history.c
         have = select(ph.market_id).where(ph.market_id.is_not(None)).distinct()
         todo = self.db.rows(select(mk.id).where(
-            mk.tradeable.is_(True), mk.resolved_outcome.is_not(None), mk.id.not_in(have),
+            mk.resolved_outcome.is_not(None), mk.yes_token.is_not(None), mk.id.not_in(have),
             mk.local_date >= (now - timedelta(days=10)).date().isoformat()).order_by(mk.id))
-        return sum(self._store_price_history(r["id"], now) for r in todo)
+        stored = 0
+        for r in todo:
+            if int(self.db.get_state(f"price_history_empty:{r['id']}", 0)) >= EMPTY_HISTORY_TRIES:
+                continue
+            try:
+                stored += self._store_price_history(r["id"], now)
+            except Exception as exc:  # never let a history fetch break settlement
+                self.db.log_event("WARNING", "price_history", f"market {r['id']}: {type(exc).__name__}: {exc}")
+                break
+        return stored
 
     def _store_price_history(self, market_id: str, now: datetime) -> int:
         """Keep the YES price series of one resolved market for backtests."""
@@ -350,12 +370,12 @@ class Engine:
         if not m or not m["yes_token"]:
             return 0
         start = _parse_time(m["pm_created_at"]) or _parse_time(m["first_seen"]) - timedelta(days=3)
-        try:
-            series = self.pm.get_price_history(m["yes_token"], start, now)
-        except Exception as exc:  # never let a history fetch break settlement
-            self.db.log_event("WARNING", "price_history", f"market {market_id}: {type(exc).__name__}: {exc}")
-            return 0
+        series = self.pm.get_price_history(m["yes_token"], start, now)
         if not series:
+            key = f"price_history_empty:{market_id}"
+            tries = int(self.db.get_state(key, 0)) + 1
+            self.db.set_state(key, tries)
+            self.db.log_event("WARNING", "price_history", f"market {market_id}: empty history (try {tries})")
             return 0
         with self.db.engine.begin() as conn:
             conn.execute(market_price_history.insert(), [

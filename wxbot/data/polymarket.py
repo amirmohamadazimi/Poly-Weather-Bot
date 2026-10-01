@@ -23,14 +23,15 @@ MONTHS = {m: i for i, m in enumerate(
 TITLE_RE = re.compile(
     r"^(?P<kind>highest|lowest) temperature in (?P<city>.+?) on (?P<month>[a-z]+) (?P<day>\d{1,2})"
     r"(?:,? (?P<year>\d{4}))?\??$", re.I)
-WU_RE = re.compile(r"wunderground\.com/history/[a-z]+/[a-z-]+/[^/\s]+/(?P<code>[a-z0-9]{3,4})\b", re.I)
+# the ICAO code is the first all-caps path segment: .../daily/cn/jinan/ZSJN, .../daily/us/ny/new-york-city/KLGA
+WU_RE = re.compile(r"(?i:wunderground\.com/history/[a-z]+/)(?:[^/\s]+/)*?(?P<code>[A-Z][A-Z0-9]{3})(?=[/?#\s]|\.?$|\.\s)")
 NOAA_RE = re.compile(r"[?&]site=(?P<code>[a-z0-9]{3,4})\b", re.I)
 RANGE_RE = re.compile(r"(-?\d+(?:\.\d+)?)\s*°?\s*(?:-|–|to)\s*(-?\d+(?:\.\d+)?)\s*°\s*([CF])", re.I)
 SINGLE_RE = re.compile(r"(-?\d+(?:\.\d+)?)\s*°\s*([CF])", re.I)
 # resolution criteria, see parse_criteria()
 RULE_RE = re.compile(
     r"contains the (?P<extreme>highest|lowest) temperature recorded (?:by (?P<by>[^\n]+?) )?at the "
-    r"(?P<station>[^\n]+?) Station in degrees (?P<unit>Celsius|Fahrenheit)(?P<rest>[^\n]*)", re.I)
+    r"(?P<station>[^\n]+?)(?: Station)? in degrees (?P<unit>Celsius|Fahrenheit)(?P<rest>[^\n]*)", re.I)
 RULE_DATE_RE = re.compile(
     r"^\s*on (?:(?P<d1>\d{1,2}) (?P<m1>[a-z]{3,9})\.?|(?P<m2>[a-z]{3,9})\.? (?P<d2>\d{1,2}),?) "
     r"(?:['’](?P<yy>\d{2})|(?P<yyyy>\d{4}))(?!\d)", re.I)

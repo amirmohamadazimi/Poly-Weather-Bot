@@ -62,8 +62,8 @@ def create_app(cfg, db: Database, runner=None, now=utcnow) -> FastAPI:
             .join(predictions, p.id == s.prediction_id)
             .where(mk.closed.is_(False), mk.local_date >= today)
             .order_by(mk.local_date, mk.event_title, mk.bucket_lo.is_(None).desc(), mk.bucket_lo))
-        skipped = db.rows(select(mk.skip_reason, func.count().label("n")).where(mk.tradeable.is_(False),
-                                                                                 mk.closed.is_(False))
+        skipped = db.rows(select(mk.skip_reason, func.count().label("n"))
+                          .where(mk.tradeable.is_(False), mk.closed.is_(False), mk.local_date >= today)
                           .group_by(mk.skip_reason))
         criteria = sum(r["n"] for r in skipped if (r["skip_reason"] or "").startswith(CRITERIA_SKIP))
         return {"markets": rows, "skipped": skipped, "skipped_criteria": criteria}

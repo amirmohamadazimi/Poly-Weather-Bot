@@ -78,6 +78,16 @@ market_price_history = Table(  # CLOB traded-price series, stored once a market 
     _ts("fetched_at"),
 )
 
+market_criteria_history = Table(  # each market text seen, so edits to the rules mid-life are kept
+    "market_criteria_history", metadata,
+    Column("id", Integer, primary_key=True),
+    Column("market_id", String(40), ForeignKey("markets.id"), index=True),
+    _ts("seen_at"),
+    Column("description", Text),
+    Column("resolution_source", Text),
+    Column("criteria", JSON),                          # parse_criteria() output incl. problems
+)
+
 forecast_values = Table(  # one row per model value: what each model said, from which run
     "forecast_values", metadata,
     Column("id", Integer, primary_key=True),
@@ -250,7 +260,7 @@ backtest_runs = Table(
 
 EXPORT_TABLES = [
     "paper_bets", "signals", "predictions", "forecast_snapshots", "forecast_values", "markets",
-    "market_snapshots", "market_price_history", "market_resolutions", "bankroll_snapshots",
+    "market_snapshots", "market_price_history", "market_criteria_history", "market_resolutions", "bankroll_snapshots",
     "weather_observations", "calibration_params", "backtest_runs", "system_events",
 ]
 
