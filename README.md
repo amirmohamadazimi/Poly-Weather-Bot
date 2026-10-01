@@ -18,6 +18,9 @@ pip install -r requirements.txt
 python main.py
 ```
 
+Or with [uv](https://docs.astral.sh/uv/), which installs the exact locked
+versions from `uv.lock`: `uv sync` then `uv run python main.py`.
+
 Open <http://localhost:8000>. The bot starts with a virtual $1,000 and runs a
 cycle every 30 minutes. Stop it with Ctrl+C; everything is kept in
 `data/wxbot.sqlite3`, so it picks up where it left off on restart.
@@ -149,8 +152,8 @@ Run workflow**.
 **Seeing results**
 
 * Quickest: open `REPORT.md` on the `paper-data` branch on GitHub (it works on
-  a phone). It shows bankroll, P/L, ROI, calibration, the latest 30 bets and
-  the bot's status, and is rewritten every run. The same report appears on each
+  a phone). It shows bankroll, P/L, ROI, calibration, results and every bet by
+  market day, and the bot's status, and is rewritten every run. The same report appears on each
   run's summary page under Actions.
 * Full dashboard: download `wxbot.sqlite3` from the `paper-data` branch (open
   the file on GitHub and click the download button), save it as
@@ -159,6 +162,9 @@ Run workflow**.
   cloud bot keeps running. Or use `python main.py report` / `export`.
 * Do not run `python main.py` (the loop) on your own machine at the same time
   unless you want a second, separate experiment.
+
+The scheduled workflow runs experiment 1 from the frozen `exp1-frozen`
+branch, not from `main`; see [docs/experiments.md](docs/experiments.md).
 
 ## Running on a server (Phase 2)
 
@@ -198,7 +204,14 @@ wxbot/web/                  dashboard (FastAPI + one HTML page)
 tests/                      offline tests (no network)
 ```
 
-Run the tests with `pip install -r requirements-dev.txt && pytest`.
+Run the tests with `pip install -r requirements-dev.txt && pytest` (or `uv run pytest`).
+
+## Documentation
+
+* [docs/architecture.md](docs/architecture.md): the pipeline stages and where each lives
+* [docs/database.md](docs/database.md): every table and what one row means
+* [docs/experiments.md](docs/experiments.md): running experiments and how to reproduce them
+* [docs/roadmap.md](docs/roadmap.md): v2 gap analysis and milestone plan
 
 ## Known limitations (v1)
 
