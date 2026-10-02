@@ -30,7 +30,7 @@ Legend: **Have** = exists and is tested · **Partial** = exists but is missing w
 | 13 | Learning from mistakes | Partial | Every prediction stores inputs, model version, forecast and market price; after resolution each is classified (overconfidence, underestimation, significant or not) and grouped by city, lead, variable, bucket distance from the forecast, distance from the climate normal, model disagreement, liquidity and model version, with weaknesses flagged only at 3+ standard errors, on the dashboard's Learning tab and in REPORT.md (v2 M7) | Store the error classes per prediction and feed the weaknesses into retraining and the signal rules (M9) |
 | 14 | Model versioning | Have | `model_versions` registry (version, calibration version, feature set, params, role); every prediction carries its model version, role and feature set (v2 M4) | Calibrator fits are versioned in `prob_calibrators` and every prediction records the one it used (v2 M5) |
 | 15 | Continuous learning | Missing | Calibration refits only on the first run | A retrain → validate → compare with production → approval rule → deploy/rollback pipeline |
-| 16 | Backtesting | Partial | A walk-forward forecast backtest with no look-ahead (Previous Runs API) | Naive vs forecast vs model vs calibrated vs market comparison; a market-price backtest using historical Polymarket prices |
+| 16 | Backtesting | Have | A walk-forward forecast backtest with no look-ahead (Previous Runs API), and a market backtest (v2 M8) replaying closed Polymarket markets at the price on offer at each decision time, with forecasts, station bias, climatology and calibrator all limited to what was known then; naive vs raw forecast vs model vs calibrated vs market on the same markets, the live betting rules as flat bets and on a $100 bankroll, every excluded market counted | No gap. Liquidity and order-book depth cannot be replayed (not in Polymarket's history) |
 | 17 | 30-day $100 experiment | Partial | A $1,000 version is running on GitHub Actions; REPORT.md | The $100 run itself; report sections on log loss, segments, over- and under-confidence, largest errors, model versions and edge concentration |
 | 18 | Dashboard | Have | Overview (starting bankroll, equity, P/L, ROI, positions); live markets with current bid/ask, raw and calibrated probability, edge, EV and position; portfolio with mark value, payout, max loss and every risk limit's use; searchable bet history; charts of bankroll, P/L, drawdown, calibration (raw and calibrated), Brier, log loss, accuracy and model vs market; a Learning tab; system health with data-source status, database, model, calibrator and last refits (v2 M7) | No gap |
 | 19 | Notifications | Missing | None | An optional notifier interface (log/webhook/email) for the listed events |
@@ -54,7 +54,7 @@ Legend: **Have** = exists and is tested · **Partial** = exists but is missing w
 | 5 | Probability calibration | Have | Done on `v2-m5-calibration`: isotonic/Platt layer with walk-forward approval, calibrated probability through to signals, log loss, ECE, reliability data |
 | 6 | $100 paper engine | Have | Done on `v2-m6-paper-engine`: $100 defaults, mark-to-market, city-day exposure cap, non-negative cash invariant, experiments table |
 | 7 | Dashboard | Have | Done on `v2-m7-dashboard`: live prices and calibrated probability, portfolio and risk limits, bet search, Brier/log-loss/accuracy charts, Learning tab, system health |
-| 8 | Historical backtesting | Partial | Baselines vs model vs market, with historical prices |
+| 8 | Historical backtesting | Have | Done on `v2-m8-backtest`: `backtest-markets` and the manual `backtest` workflow; report BACKTEST.md |
 | 9 | Error analysis and learning | Missing | Error classes, failure patterns, retrain/approve/rollback pipeline |
 | 10 | Docker | Have | Compose service for the dashboard plus worker; small fixes only |
 | 11 | CI and tests | Partial | ruff, mypy, Docker build, coverage of new parts |
@@ -65,4 +65,4 @@ Legend: **Have** = exists and is tested · **Partial** = exists but is missing w
 ## Notes
 
 - **Schema changes.** The running database was created by `create_all`, which doesn't add columns to existing tables. v2 needs a small migration step (`migrations/`) before it changes any table.
-- **GitHub Actions minutes.** Two experiments at roughly 6 minutes per run, with runs every 7–8 hours as GitHub actually schedules them, come to about 1,400 of the 2,000 free minutes a month.
+- **GitHub Actions minutes.** Two experiments at roughly 6 minutes per run, with runs every 7–8 hours as GitHub actually schedules them, come to about 1,400 of the 2,000 free minutes a month. A 14-day market backtest adds roughly 30 minutes per run, so run it sparingly on Actions or locally.

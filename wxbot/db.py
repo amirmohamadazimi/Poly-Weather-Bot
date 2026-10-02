@@ -319,11 +319,51 @@ backtest_runs = Table(
     Column("report", JSON),
 )
 
+historical_forecasts = Table(  # market backtest: what each model forecast N days ahead (Previous Runs)
+    "historical_forecasts", metadata,
+    Column("id", Integer, primary_key=True),
+    Column("source", String(40), nullable=False),
+    Column("station", String(10), nullable=False, index=True),
+    Column("kind", String(4), nullable=False),
+    Column("local_date", String(10), nullable=False),
+    Column("lead_days", Integer, nullable=False),      # previous_dayN: from runs at least N x 24 h before
+    Column("model", String(40), nullable=False),
+    Column("value_c", Float, nullable=False),          # daily high/low over the station's local day
+    _ts("fetched_at"),
+)
+
+backtest_predictions = Table(  # market backtest: every replayed decision and what each source said then
+    "backtest_predictions", metadata,
+    Column("id", Integer, primary_key=True),
+    Column("run_id", Integer, ForeignKey("backtest_runs.id"), index=True),
+    Column("market_id", String(40), index=True),
+    Column("lead_days", Integer),
+    Column("decision_time", DateTime(timezone=True)),
+    Column("price_time", DateTime(timezone=True)),     # the price point used: the last at or before the decision
+    Column("market_prob", Float),                      # YES price then
+    Column("p_climatology", Float),
+    Column("p_raw_forecast", Float),
+    Column("p_model", Float),
+    Column("p_calibrated", Float),
+    Column("calibrator_version", String(60)),
+    Column("n_models", Integer),
+    Column("mu_c", Float),
+    Column("sigma_c", Float),
+    Column("bias_c", Float),                           # walk-forward station bias used
+    Column("bias_n", Integer),                         # past days it was fitted on (0 = default spread, no bias)
+    Column("outcome", Integer),                        # 1 = YES
+    Column("side", String(3)),                         # flat-stake strategy: the side the rules looked at
+    Column("entry_price", Float),
+    Column("decision", String(10)),                    # BET | NO_BET | HELD (already bet at an earlier lead)
+    Column("reason", Text),
+    Column("pnl_per_dollar", Float),                   # flat $1 stake; None without a bet
+)
+
 EXPORT_TABLES = [
     "paper_bets", "signals", "predictions", "forecast_snapshots", "forecast_values", "markets",
     "market_snapshots", "market_price_history", "market_criteria_history", "market_resolutions", "bankroll_snapshots",
     "weather_observations", "calibration_params", "backtest_runs", "model_versions", "prob_calibrators",
-    "experiments", "system_events",
+    "experiments", "system_events", "historical_forecasts", "backtest_predictions",
 ]
 
 

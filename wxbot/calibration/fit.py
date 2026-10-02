@@ -100,11 +100,12 @@ def gain_confidence(raw: list[float], cal: list[float], outcomes: list[int], see
     return wins / BOOTSTRAP
 
 
-def fit_round(db: Database, cfg, model_version: str, fit_time: datetime) -> list[dict]:
-    """Fit every configured method, judge it on the holdout, store the round."""
+def judge(data: list[tuple[datetime, float, int]], cfg, model_version: str, fit_time: datetime) -> list[dict]:
+    """Fit every configured method on the older rows of `data` (oldest decision
+    first) and judge it on the newest. Stores nothing: fit_round stores the
+    round, and the market backtest replays it day by day."""
     c = cfg.calibration
     floor, ceiling = cfg.model.prob_floor, cfg.model.prob_ceiling
-    data = training_set(db, model_version, fit_time, float(cfg.strategy.min_lead_hours))
     n = len(data)
     n_hold = int(round(n * float(c.holdout_fraction)))
     train, hold = data[:n - n_hold], data[n - n_hold:]
@@ -141,6 +142,21 @@ def fit_round(db: Database, cfg, model_version: str, fit_time: datetime) -> list
     approved = [r for r in out if r["approved"]]
     if approved:
         min(approved, key=lambda r: r["log_loss_after"])["selected"] = True
+    return out
+
+
+def selected(rows: list[dict], cfg) -> Calibrator:
+    """The calibrator a judged round selected; identity if none was approved."""
+    row = next((r for r in rows if r["selected"]), None)
+    if row is None:
+        return identity()
+    return Calibrator(row["method"], row["version"], row["params"], cfg.model.prob_floor, cfg.model.prob_ceiling)
+
+
+def fit_round(db: Database, cfg, model_version: str, fit_time: datetime) -> list[dict]:
+    """Fit every configured method, judge it on the holdout, store the round."""
+    out = judge(training_set(db, model_version, fit_time, float(cfg.strategy.min_lead_hours)), cfg, model_version,
+                fit_time)
     with db.engine.begin() as conn:
         for row in out:
             conn.execute(prob_calibrators.insert().values(**row))

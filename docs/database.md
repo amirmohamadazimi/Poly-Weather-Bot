@@ -23,7 +23,9 @@ so the database records what was known at each moment.
 | `bankroll_snapshots` | bankroll change | cash, open_exposure (at cost), market_value (open bets at the bid of the side held), unrealized_pnl, equity (cash + market value from v2 M6; cash + open exposure before), realized_pnl, reason |
 | `experiments` | experiment (one per database) | name, initial_bankroll, started_at (first bankroll snapshot, or the first start), git_ref, config (settings at the start, secrets removed), created_at |
 | `calibration_params` | station × kind × lead | bias_c, sigma_c, n, fit window, backtest_run_id |
-| `backtest_runs` | backtest | params, report |
+| `backtest_runs` | backtest | params (kind `markets` for the market backtest: window, leads, delay, half spread, git_ref, the settings used), report |
+| `historical_forecasts` | model forecast for a station × day × kind × lead (market backtest) | source, lead_days (Previous Runs `previous_dayN`: from runs at least N × 24 h before each hour), model, value_c, fetched_at |
+| `backtest_predictions` | replayed decision: market × lead (market backtest) | run_id, decision_time, price_time (the price point used, never after the decision), market_prob, p_climatology, p_raw_forecast, p_model, p_calibrated, calibrator_version, n_models, mu_c, sigma_c, bias_c and bias_n (walk-forward station bias and the days it was fitted on), outcome, and the flat-stake decision: side, entry_price, decision (BET, NO_BET, HELD), reason, pnl_per_dollar |
 | `system_events` | log event (info and up) | level, component, message, details |
 | `bot_state` | key | last cycle, markets monitored, loop status |
 
@@ -46,6 +48,13 @@ after 3 the market is not asked again.
 
 `market_price_history` is fetched after the fact, so for any backtest only
 points with `t` at or before the decision time may be used.
+
+The market backtest (`python main.py backtest-markets`) uses its own database,
+`[backtest] database_url` (`data/backtest.sqlite3`), with this same schema: it
+stores the closed markets of its window in `markets`, `market_resolutions`
+(resolved_at = Polymarket's close time) and `market_price_history`, the
+observations in `weather_observations`, and adds `historical_forecasts` and
+`backtest_predictions`. An experiment's database never gets these rows.
 
 `python main.py export DIR` writes every table to CSV.
 

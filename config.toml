@@ -96,6 +96,30 @@ min_confidence = 0.95
 isotonic_min_block = 20
 refit_hours = 24
 
+[backtest]
+# Historical market backtest (python main.py backtest-markets): research only.
+# It keeps its own database, so replayed markets never mix with a paper-trading
+# experiment's ledger.
+database_url = "sqlite:///data/backtest.sqlite3"
+# Lead N uses Open-Meteo's previous_dayN forecast, whose value for every hour
+# comes from a model run started at least N x 24 hours before that hour. A run
+# is assumed downloadable this many hours after it starts (ECMWF's open data
+# take about 7 to 8), so the decision for lead N is made at
+# end of the local day - (24 x N - forecast_delay_hours) hours.
+forecast_delay_hours = 8
+leads = [1, 2, 3]
+# Days of forecasts and observations before the window, for the first
+# walk-forward bias/sigma fits (each fit uses at most this many past days).
+train_days = 90
+# Years of observations before the window, for the climatology baseline.
+climatology_years = 3
+# The CLOB's hourly price history is a mid price. Buying is assumed to cost
+# this much more (half the bid-ask spread), plus [strategy] slippage and fee.
+half_spread = 0.01
+# The flat-stake result is also shown with these half spreads.
+half_spread_sensitivity = [0.0, 0.01, 0.02, 0.03]
+bootstrap = 2000
+
 [strategy]
 min_model_prob = 0.80       # confidence: model probability of the side we'd buy
 min_edge = 0.05             # model prob - entry price (after fees/slippage)

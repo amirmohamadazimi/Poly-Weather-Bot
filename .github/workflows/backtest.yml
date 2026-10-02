@@ -1,0 +1,93 @@
+# Historical market backtest (v2 M8), run by hand from the Actions tab.
+#
+# Fetches every closed daily-temperature market of the window from Polymarket
+# with its hourly price history, the forecasts each model issued days ahead
+# (Open-Meteo Previous Runs) and observed highs/lows (IEM METAR), replays them
+# with no look-ahead, and shows BACKTEST.md on the run's summary page. The
+# backtest database and report are uploaded as a workflow artifact. Nothing is
+# pushed and no experiment's data is touched.
+#
+# Cost: about one CLOB request per tradeable market (several hundred a day of
+# markets), so a 14-day window takes roughly half an hour of Actions minutes.
+#
+# On pull requests that change the backtester, a two-day, two-station run checks
+# that the live APIs still answer the way the collector expects.
+#
+# RESEARCH ONLY: app.mode is forced to "paper" and no secrets are used.
+name: backtest
+
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "Market days to replay, ending two days ago (ignored when start is set)"
+        default: "14"
+      start:
+        description: "First market day, YYYY-MM-DD (optional)"
+        default: ""
+      end:
+        description: "Last market day, YYYY-MM-DD (optional; default two days ago)"
+        default: ""
+      stations:
+        description: "Comma-separated station codes (blank: every enabled station)"
+        default: ""
+  pull_request:
+    paths:
+      - "wxbot/backtesting/**"
+      - "wxbot/data/polymarket.py"
+      - "wxbot/data/weather.py"
+      - ".github/workflows/backtest.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    defaults:
+      run:
+        shell: bash
+    env:
+      WXBOT_APP__MODE: paper
+      WXBOT_BACKTEST__DATABASE_URL: sqlite:///${{ github.workspace }}/out/backtest.sqlite3
+      DAYS: ${{ github.event_name == 'pull_request' && '2' || inputs.days }}
+      START: ${{ inputs.start }}
+      END: ${{ inputs.end }}
+      STATIONS: ${{ github.event_name == 'pull_request' && 'EGLC,KLGA' || inputs.stations }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Run the market backtest
+        run: |
+          mkdir -p out
+          args=(backtest-markets out/report.json --days "$DAYS")
+          [ -n "$START" ] && args+=(--start "$START")
+          [ -n "$END" ] && args+=(--end "$END")
+          [ -n "$STATIONS" ] && args+=(--stations "$STATIONS")
+          python main.py "${args[@]}" > out/BACKTEST.md
+          cat out/BACKTEST.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Compress the backtest database
+        if: always()
+        run: |
+          if [ -f out/backtest.sqlite3 ]; then
+            python -c "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute('PRAGMA wal_checkpoint(TRUNCATE)'); c.execute('PRAGMA journal_mode=DELETE'); c.close()" out/backtest.sqlite3
+            rm -f out/backtest.sqlite3-wal out/backtest.sqlite3-shm
+            gzip -9 -f out/backtest.sqlite3
+          fi
+
+      - name: Upload report and database
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backtest-${{ github.run_number }}
+          path: out/
+          retention-days: 30
