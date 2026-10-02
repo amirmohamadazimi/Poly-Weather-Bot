@@ -41,6 +41,7 @@ Other commands:
 | `python main.py worker` | Loop without the dashboard |
 | `python main.py web` | Dashboard only (e.g. a second process reading the same DB) |
 | `python main.py backtest [--days 90] [--stations EGLC,KLGA]` | Walk-forward forecast backtest, stores calibration |
+| `python main.py backtest-markets [report.json] [--days 14 \| --start D --end D] [--stations ...] [--offline]` | Replays closed markets at their historical prices in its own database; prints BACKTEST.md |
 | `python main.py calibrate` | Refit the probability calibrators now (each cycle refits once a day) |
 | `python main.py report` | End-of-experiment performance report (markdown) |
 | `python main.py export [DIR]` | Every table as CSV plus `report.json` |
@@ -292,14 +293,46 @@ The dashboard and report always count from the database's own starting
 bankroll (its experiment's, or the one its bankroll history implies), so a
 downloaded database shows its own numbers whatever the local config says.
 
-The backtest scores the forecast model walk-forward: each day is priced with
+There are two backtests.
+
+`backtest` scores the forecast model walk-forward: each day is priced with
 bias/sigma fitted only on observations available when that forecast was issued,
 using the forecasts each model actually issued 1–3 days ahead (Open-Meteo
-Previous Runs API) and METAR observations (Iowa Environmental Mesonet).
-Historical market prices are not replayed yet, so the backtest measures
-forecast skill and calibration; the paper run measures P/L at real prices.
-Resolved markets' price histories are now stored (`market_price_history`) so a
-market-price backtest can be added later.
+Previous Runs API) and METAR observations (Iowa Environmental Mesonet), on a
+ladder of synthetic buckets. It also fits the calibration the live model uses.
+
+`backtest-markets` replays real closed Polymarket markets at the prices that
+were on offer, using only what was known at each decision time (v2 M8):
+
+* **Decision times.** Lead N uses the forecast each model issued at least N days
+  earlier (Previous Runs `previous_dayN`), assumed downloadable 8 hours after
+  the run started. The decision is made when that is surely available: 16, 40
+  and 64 hours before the end of the market's local day for leads 1 to 3.
+* **Prices.** The last hourly CLOB price at or before the decision time. Buying
+  costs half a spread (1 cent by default) more, plus the configured slippage and
+  fee; ROI is also shown at 0 to 3 cents.
+* **Five sources on the same markets:** climatology (the naive baseline), the
+  raw forecast, the model with station bias and spread fitted only on days that
+  had ended, the model through the calibrator the live approval rule would have
+  picked from results already known (refitted daily), and the market price.
+  Brier score, log loss and calibration error, with the difference from the
+  market and a 95% interval that resamples whole events.
+* **The live betting rules** on the same decisions: $1 flat bets (is there an
+  edge at all, by lead and side, and with each probability source), and a
+  $100 bankroll with the live sizing and every risk cap. Liquidity and
+  order-book depth cannot be replayed (Polymarket only shows them after a
+  market closed) and are listed as such.
+* **Nothing hidden.** Every market listed for the window is stored, so the report
+  counts what was not tradeable, had no result or never traded, and every
+  decision skipped (not listed yet, no forecast, no price). Every replayed
+  decision is kept in `backtest_predictions`.
+
+It keeps its own database (`[backtest] database_url`), so it never mixes with an
+experiment, and stores everything it fetches there first: a re-run fetches only
+what is missing, and `--offline` replays stored data only. On GitHub, run
+**Actions → backtest → Run workflow**; the report shows on the run's summary
+page and the database is a downloadable artifact. A 14-day window makes about
+one CLOB request per tradeable market, so it takes roughly half an hour.
 
 ## Configuration
 
@@ -389,7 +422,8 @@ wxbot/evaluation/           metrics (ROI, drawdown, Brier, log loss, ECE, model 
 wxbot/health.py             data-source, database and model status for the dashboard
 wxbot/engine.py             one cycle: collect -> predict -> bet -> settle
 wxbot/runner.py             background loop
-wxbot/backtest.py           walk-forward backtest + calibration fit
+wxbot/backtest.py           walk-forward forecast backtest + calibration fit
+wxbot/backtesting/          market backtest: collect, replay with no look-ahead, evaluate, BACKTEST.md
 wxbot/web/                  dashboard (FastAPI + one HTML page)
 tests/                      offline tests (no network)
 ```

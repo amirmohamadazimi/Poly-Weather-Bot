@@ -348,6 +348,12 @@ def parse_market(event: dict, market: dict, kinds: list[str] | None = None) -> P
     return pm
 
 
+def price_changes(series: list[tuple[datetime, float]]) -> list[tuple[datetime, float]]:
+    """The points of a price series where the price changed (a price holds until
+    the next point); the first and last points are always kept."""
+    return [pt for i, pt in enumerate(series) if i == 0 or pt[1] != series[i - 1][1] or i == len(series) - 1]
+
+
 @dataclass
 class BookLevel:
     price: float
@@ -371,6 +377,29 @@ class PolymarketClient:
                 break
             events.extend(page)
             if len(page) < page_size:
+                break
+            offset += page_size
+        return events
+
+    def list_closed_events(self, start: date, end: date, page_size: int = 100, max_pages: int = 500) -> list[dict]:
+        """Closed daily-temperature events whose end date is within a day before
+        `start` to two days after `end` (UTC): every event of those days, traded
+        or not, for backtests. Pages are read in end-date order and reading stops
+        past the window, even if the API ignored end_date_max."""
+        lo = datetime.combine(start - timedelta(days=1), datetime.min.time(), timezone.utc)
+        hi = datetime.combine(end + timedelta(days=2), datetime.min.time(), timezone.utc)
+        fmt = "%Y-%m-%dT%H:%M:%SZ"
+        events, offset = [], 0
+        for _ in range(max_pages):
+            page = get_json(self.session, f"{GAMMA}/events", {
+                "tag_slug": self.tag_slug, "closed": "true", "end_date_min": lo.strftime(fmt),
+                "end_date_max": hi.strftime(fmt), "limit": page_size, "offset": offset, "order": "endDate",
+                "ascending": "true"})
+            if not isinstance(page, list) or not page:
+                break
+            ends = [parse_time(e.get("endDate")) for e in page]
+            events.extend(e for e, t in zip(page, ends) if t is not None and lo <= t <= hi)
+            if len(page) < page_size or any(t is not None and t > hi for t in ends):
                 break
             offset += page_size
         return events

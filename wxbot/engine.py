@@ -18,7 +18,7 @@ import requests
 from sqlalchemy import and_, desc, exists, func, or_, select, update
 
 from wxbot.calibration.fit import active_calibrator, fit_round
-from wxbot.data.polymarket import Bucket, ParsedMarket, parse_time, resolved_outcome
+from wxbot.data.polymarket import Bucket, ParsedMarket, parse_time, price_changes, resolved_outcome
 from wxbot.data.stations import get_station
 from wxbot.data.validation import validate_forecast, validate_observation
 from wxbot.db import (
@@ -334,15 +334,10 @@ class Engine:
             "YES": (cal_p, ask if ask and ask < 1 else None, yes_mid),
             "NO": (1 - cal_p, (1 - bid) if bid else None, None if yes_mid is None else 1 - yes_mid),
         }
-
-        def score(side):
-            p, px, _ = quotes[side]
-            return (px is not None, p - px if px is not None else p)
-        side = max(quotes, key=score)
-        model_prob, top_price, market_prob = quotes[side]
+        side = rules.best_side(quotes)
+        model_prob, top_ask, market_prob = quotes[side]
         raw_prob = pred.p_yes if side == "YES" else 1 - pred.p_yes
-        if top_price is not None:
-            top_price = min(top_price + cfg.strategy.slippage, 0.999) * (1 + cfg.strategy.fee_rate)
+        top_price = rules.quoted_entry(top_ask, cfg.strategy)
         bank = portfolio.bankroll(self.db, cfg.bankroll.initial)
         ctx = rules.Context(
             side=side, model_prob=model_prob, market_prob=market_prob, entry_price=top_price,
@@ -518,7 +513,7 @@ class Engine:
         series = self.pm.get_price_history(m["yes_token"], start, end)
         if not series:
             return 0
-        kept = [pt for i, pt in enumerate(series) if i == 0 or pt[1] != series[i - 1][1] or i == len(series) - 1]
+        kept = price_changes(series)
         with self.db.engine.begin() as conn:
             conn.execute(market_price_history.insert(), [
                 dict(market_id=market_id, token="YES", t=t, price=p, fetched_at=now) for t, p in kept])

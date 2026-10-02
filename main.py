@@ -6,6 +6,9 @@
     python main.py web           # dashboard only (reads the database)
     python main.py backtest      # walk-forward forecast backtest + fit calibration
                                  #   (--if-missing: only when no calibration is stored yet)
+    python main.py backtest-markets [JSON]
+                                 # replay closed markets at historical prices (own database;
+                                 #   --start/--end or --days; --offline: stored data only)
     python main.py calibrate     # refit the probability calibrators now (the cycle does it daily)
     python main.py climatology   # load --years of observed highs/lows for the climatology baseline
                                  #   (--if-missing: only when no history was loaded yet)
@@ -38,11 +41,15 @@ BANNER = """
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("command", nargs="?", default="run",
-                        choices=["run", "once", "worker", "web", "backtest", "calibrate", "climatology", "report",
-                                 "export"])
-    parser.add_argument("path", nargs="?", help="output directory for export")
+                        choices=["run", "once", "worker", "web", "backtest", "backtest-markets", "calibrate",
+                                 "climatology", "report", "export"])
+    parser.add_argument("path", nargs="?",
+                        help="export: output directory; backtest-markets: also write the report as JSON here")
     parser.add_argument("--config", help="path to config.toml")
-    parser.add_argument("--days", type=int, default=90, help="backtest window in days")
+    parser.add_argument("--days", type=int, help="backtest window in days (backtest 90, backtest-markets 14)")
+    parser.add_argument("--start", help="backtest-markets: first market day, YYYY-MM-DD")
+    parser.add_argument("--end", help="backtest-markets: last market day, YYYY-MM-DD (default: two days ago)")
+    parser.add_argument("--offline", action="store_true", help="backtest-markets: replay stored data, fetch nothing")
     parser.add_argument("--stations", help="backtest/climatology: comma-separated station codes (default: all enabled)")
     parser.add_argument("--years", type=int, default=3, help="climatology: years of history to load")
     parser.add_argument("--if-missing", action="store_true",
@@ -56,9 +63,13 @@ def main(argv: list[str] | None = None) -> int:
         # make_broker() refuses anything but paper; fail before touching anything else
         from wxbot.execution.paper import make_broker
         make_broker(cfg, None)
-    db = Database(cfg.app.database_url)
-    safe_db = cfg.app.database_url.split("@")[-1]
-    print(BANNER.format(mode=cfg.app.mode.upper(), initial=cfg.bankroll.initial, db=safe_db), file=sys.stderr)
+    research = args.command == "backtest-markets"  # its own database, never an experiment's
+    url = cfg.backtest.database_url if research else cfg.app.database_url
+    db = Database(url)
+    print(BANNER.format(mode=cfg.app.mode.upper(), initial=cfg.bankroll.initial, db=url.split("@")[-1]),
+          file=sys.stderr)
+    if research:
+        return backtest_markets(cfg, db, args)
 
     from wxbot.experiment import starting_bankroll
     if args.command == "report":
@@ -80,7 +91,7 @@ def main(argv: list[str] | None = None) -> int:
         from wxbot.data.weather import IEMObservations, OpenMeteoPreviousRuns
         stations = [s.strip().upper() for s in args.stations.split(",")] if args.stations else None
         rep = run_backtest(cfg, db, OpenMeteoPreviousRuns(list(cfg.weather.models)), IEMObservations(),
-                           stations=stations, days=args.days)
+                           stations=stations, days=args.days or 90)
         print(json.dumps({k: v for k, v in rep.items() if k != "stations"}, indent=2, default=str))
         return 0
 
@@ -129,6 +140,32 @@ def main(argv: list[str] | None = None) -> int:
         runner.start()
     serve(cfg, create_app(cfg, db, runner))
     runner.stop()
+    return 0
+
+
+def backtest_markets(cfg, db: Database, args) -> int:
+    from datetime import date, timedelta
+
+    from wxbot.backtesting import run_market_backtest
+    from wxbot.backtesting.report import to_markdown
+    from wxbot.db import utcnow
+    end = date.fromisoformat(args.end) if args.end else utcnow().date() - timedelta(days=2)
+    start = date.fromisoformat(args.start) if args.start else end - timedelta(days=(args.days or 14) - 1)
+    stations = [s.strip().upper() for s in args.stations.split(",")] if args.stations else None
+    sources = None
+    if not args.offline:
+        from wxbot.data.polymarket import PolymarketClient
+        from wxbot.data.weather import IEMObservations, OpenMeteoPreviousRuns
+        sources = (PolymarketClient(tag_slug=cfg.markets.tag_slug), OpenMeteoPreviousRuns(list(cfg.weather.models)),
+                   IEMObservations())
+    rep = run_market_backtest(cfg, db, start, end, sources=sources, stations=stations)
+    print(to_markdown(rep))
+    if args.path:
+        with open(args.path, "w") as fh:
+            json.dump(rep, fh, indent=2)
+    if not rep["scores"]["n_rows"]:
+        print("no decisions could be replayed for this window", file=sys.stderr)
+        return 1
     return 0
 
 

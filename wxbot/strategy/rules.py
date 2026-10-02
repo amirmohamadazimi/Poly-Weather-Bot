@@ -59,6 +59,23 @@ def book_capacity(asks: list, slippage: float, fee_rate: float, max_book_share: 
     return sum(lv.size * max_book_share * min(lv.price + slippage, 0.999) * (1 + fee_rate) for lv in asks)
 
 
+def best_side(quotes: dict[str, tuple]) -> str:
+    """quotes: side -> (probability the side wins, its ask or None, ...). The
+    side with an ask and the larger probability-minus-ask; without any ask, the
+    more likely side."""
+    def score(side):
+        p, px = quotes[side][0], quotes[side][1]
+        return (px is not None, p - px if px is not None else p)
+    return max(quotes, key=score)
+
+
+def quoted_entry(ask: float | None, strategy) -> float | None:
+    """Expected price per share when buying at `ask`: slippage, then the fee."""
+    if ask is None:
+        return None
+    return min(ask + strategy.slippage, 0.999) * (1 + strategy.fee_rate)
+
+
 @dataclass
 class Context:
     side: str
