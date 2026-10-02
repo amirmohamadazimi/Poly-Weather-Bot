@@ -278,6 +278,20 @@ benchmark, log loss and expected calibration error, raw and calibrated, and
 the model comparison above. The report states plainly when
 there are too few settled bets to conclude anything.
 
+The dashboard (`python main.py web`, http://localhost:8000) has seven tabs:
+
+* **Overview:** starting bankroll, current equity, P/L, ROI and active positions, then cash, realized and unrealized P/L, win rate against the predicted win rate, drawdown.
+* **Live markets:** every monitored market with its current YES bid and ask, the forecast, the raw and calibrated probability, the market's probability, entry price, edge, EV, the signal and any open position. Click a row for every rule's value and threshold.
+* **Portfolio:** open positions at cost and at the bid, what each would pay if it wins, its largest possible loss and share of equity, and how much of each risk limit (total, per event, per city-day, daily loss) is in use.
+* **Bet history:** every paper bet, searchable by city, date, bucket or `#id`, and filtered by status and side.
+* **Model performance:** bankroll, P/L, drawdown, wins and losses, calibration (raw and calibrated), model vs market, and Brier score, log loss and accuracy (did the most likely bucket win) by market day for the model and the market, plus the model comparison.
+* **Learning:** where the model goes wrong. Every resolved market gets an error class (85% and NO is significant overconfidence; 25% and YES is underestimation), and predictions and bets are broken down by city, lead time, highest or lowest, the bucket's distance from the forecast, probability band, how much the weather models disagreed, distance from the climate normal, liquidity and model version. A group is flagged as a weakness (overconfident, YES too often or too rarely, worse than the market) only with 30+ markets (15+ bets) and a gap of 3+ standard errors, so chance alone rarely flags one; REPORT.md lists the same weaknesses. The largest errors are listed with any bet placed on them.
+* **System health:** each data source's last success and status (ok, stale after three missed fetches, failing when its latest warning is newer than its latest success), last market scan and prediction, database size and row counts, the production and shadow models, the calibrator in use and when calibration was last refitted, the experiment and code version, and recent errors.
+
+The dashboard and report always count from the database's own starting
+bankroll (its experiment's, or the one its bankroll history implies), so a
+downloaded database shows its own numbers whatever the local config says.
+
 The backtest scores the forecast model walk-forward: each day is priced with
 bias/sigma fitted only on observations available when that forecast was issued,
 using the forecasts each model actually issued 1–3 days ahead (Open-Meteo
@@ -322,8 +336,8 @@ Run workflow**.
   wxbot.sqlite3.gz`, or 7-Zip on Windows), save it as `data/wxbot.sqlite3` in
   your local copy, and run `python main.py web`. It is stored gzipped because
   GitHub refuses files over 100 MB.
-  `web` only reads the data and never trades, so it is safe while the
-  cloud bot keeps running. Or use `python main.py report` / `export`.
+  `web` only reads the data: it never trades or writes to the database, so it
+  is safe while the cloud bot keeps running. Or use `python main.py report` / `export`.
 * Do not run `python main.py` (the loop) on your own machine at the same time
   unless you want a second, separate experiment.
 
@@ -371,7 +385,8 @@ wxbot/history.py            loads past observations for the climatology baseline
 wxbot/strategy/             betting rules, fill simulation, sizing
 wxbot/execution/            paper broker (cash check), bankroll ledger and mark-to-market, live-trading guard
 wxbot/experiment.py         records which experiment a database holds
-wxbot/evaluation/           metrics (ROI, drawdown, Brier, log loss, ECE, model comparison)
+wxbot/evaluation/           metrics (ROI, drawdown, Brier, log loss, ECE, model comparison), error analysis
+wxbot/health.py             data-source, database and model status for the dashboard
 wxbot/engine.py             one cycle: collect -> predict -> bet -> settle
 wxbot/runner.py             background loop
 wxbot/backtest.py           walk-forward backtest + calibration fit

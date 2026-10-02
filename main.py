@@ -60,14 +60,15 @@ def main(argv: list[str] | None = None) -> int:
     safe_db = cfg.app.database_url.split("@")[-1]
     print(BANNER.format(mode=cfg.app.mode.upper(), initial=cfg.bankroll.initial, db=safe_db), file=sys.stderr)
 
+    from wxbot.experiment import starting_bankroll
     if args.command == "report":
         from wxbot.report import build_report, to_markdown
-        print(to_markdown(build_report(db, cfg.bankroll.initial)))
+        print(to_markdown(build_report(db, starting_bankroll(db, cfg))))
         return 0
     if args.command == "export":
         from wxbot.export import export_to_dir
         from wxbot.report import build_report
-        out = export_to_dir(db, args.path or "exports", build_report(db, cfg.bankroll.initial))
+        out = export_to_dir(db, args.path or "exports", build_report(db, starting_bankroll(db, cfg)))
         print(f"exported to {out.resolve()}")
         return 0
     if args.command == "backtest":
@@ -81,6 +82,11 @@ def main(argv: list[str] | None = None) -> int:
         rep = run_backtest(cfg, db, OpenMeteoPreviousRuns(list(cfg.weather.models)), IEMObservations(),
                            stations=stations, days=args.days)
         print(json.dumps({k: v for k, v in rep.items() if k != "stations"}, indent=2, default=str))
+        return 0
+
+    if args.command == "web":  # read-only: no engine, so nothing is written to the database
+        from wxbot.web.app import create_app
+        serve(cfg, create_app(cfg, db))
         return 0
 
     from wxbot.runner import Runner, build_engine
@@ -118,16 +124,19 @@ def main(argv: list[str] | None = None) -> int:
         stop.wait()
         return 0
 
-    import uvicorn
     from wxbot.web.app import create_app
-    if args.command == "run" and cfg.schedule.autostart:
+    if cfg.schedule.autostart:
         runner.start()
-    app = create_app(cfg, db, runner if args.command == "run" else None)
+    serve(cfg, create_app(cfg, db, runner))
+    runner.stop()
+    return 0
+
+
+def serve(cfg, app) -> None:
+    import uvicorn
     print(f"Dashboard: http://{'localhost' if cfg.app.host in ('127.0.0.1', '0.0.0.0') else cfg.app.host}:{cfg.app.port}",
           file=sys.stderr)
     uvicorn.run(app, host=cfg.app.host, port=cfg.app.port, log_level=cfg.app.log_level.lower(), access_log=False)
-    runner.stop()
-    return 0
 
 
 if __name__ == "__main__":

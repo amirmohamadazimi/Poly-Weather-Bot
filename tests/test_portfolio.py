@@ -5,6 +5,7 @@ import math
 from datetime import timedelta
 
 import pytest
+from fastapi.testclient import TestClient
 from sqlalchemy import inspect, select, text
 
 from tests.conftest import NOW, make_engine
@@ -13,10 +14,11 @@ from wxbot.db import Database, bankroll_snapshots, experiments, markets, paper_b
 from wxbot.evaluation.metrics import overview
 from wxbot.execution import portfolio
 from wxbot.execution.paper import BrokerRefused, PaperBroker
-from wxbot.experiment import ensure_experiment, record_code_version, redact
+from wxbot.experiment import ensure_experiment, record_code_version, redact, starting_bankroll
 from wxbot.report import build_report, to_markdown
 from wxbot.strategy import rules
 from wxbot.strategy.rules import Fill
+from wxbot.web.app import create_app
 
 TAIL = "1010"          # "23°C or higher": YES bid 0.09 / ask 0.11, the bot buys NO
 SHARES = 2.0 / 0.915   # $2 at the NO ask 0.91 plus 0.005 slippage
@@ -234,6 +236,35 @@ def test_an_older_database_starts_at_its_first_bankroll_snapshot(cfg):
     db.insert(bankroll_snapshots, ts=first, cash=100, open_exposure=0, equity=100, realized_pnl=0, reason="cycle")
     exp = ensure_experiment(db, cfg, NOW, env={})
     assert exp["started_at"].replace(tzinfo=None) == first.replace(tzinfo=None) and exp["git_ref"] is None
+
+
+def test_an_older_database_with_a_different_bankroll_is_refused(cfg):
+    db = Database(cfg.app.database_url)       # experiment 1: $1,000, before experiments were recorded
+    db.insert(bankroll_snapshots, ts=NOW, cash=990, open_exposure=20, equity=1010, realized_pnl=10, reason="cycle")
+    with pytest.raises(ValueError, match="started with \\$1,000.00; the config says \\$100.00"):
+        ensure_experiment(db, cfg, NOW, env={})
+    assert db.rows(select(experiments)) == []
+
+
+def test_the_dashboard_and_report_count_from_the_databases_own_bankroll(cfg):
+    db = Database(cfg.app.database_url)
+    assert starting_bankroll(db, cfg) == 100.0                             # new database: the config's
+    db.insert(bankroll_snapshots, ts=NOW, cash=990, open_exposure=20, equity=1010, realized_pnl=10, reason="cycle")
+    assert starting_bankroll(db, cfg) == 1000.0                            # implied by its snapshots
+    client = TestClient(create_app(cfg, db))
+    assert client.get("/api/overview").json()["starting_bankroll"] == 1000.0
+    assert "| Starting bankroll | $1000.00 |" in client.get("/export/report.md").text
+    assert client.get("/api/report").json()["overview"]["cash"] == 1000.0
+
+
+def test_web_command_writes_nothing_to_the_database(cfg, monkeypatch):
+    import main
+    served = []
+    monkeypatch.setattr(main, "serve", lambda cfg_, app: served.append(app))
+    monkeypatch.setenv("WXBOT_APP__DATABASE_URL", cfg.app.database_url)
+    assert main.main(["web"]) == 0 and served
+    db = Database(cfg.app.database_url)
+    assert db.rows(select(experiments)) == [] and db.rows(select(system_events)) == []
 
 
 def test_each_change_of_code_version_is_logged(cfg):
