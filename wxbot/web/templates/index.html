@@ -7,9 +7,11 @@
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 <style>
   :root { --bg:#f7f7f5; --card:#fff; --ink:#1d1d1b; --muted:#6b6b66; --line:#e3e2dc;
-          --pos:#1a7f45; --neg:#b3261e; --warn:#9a6700; --accent:#2f5aa8; }
+          --pos:#1a7f45; --neg:#b3261e; --warn:#9a6700; --accent:#2f5aa8;
+          --s1:#2a78d6; --s2:#eb6834; --s3:#1baf7a; }
   @media (prefers-color-scheme: dark) { :root { --bg:#161615; --card:#1f1f1d; --ink:#ecebe6; --muted:#a3a29b;
-          --line:#34332f; --pos:#4cc47f; --neg:#ef7a70; --warn:#e0b44c; --accent:#7ea3ea; } }
+          --line:#34332f; --pos:#4cc47f; --neg:#ef7a70; --warn:#e0b44c; --accent:#7ea3ea;
+          --s1:#3987e5; --s2:#d95926; --s3:#199e70; } }
   * { box-sizing:border-box }
   body { margin:0; font:14px/1.45 system-ui, -apple-system, Segoe UI, sans-serif; background:var(--bg); color:var(--ink) }
   header { display:flex; flex-wrap:wrap; gap:12px; align-items:center; padding:12px 16px; border-bottom:1px solid var(--line); background:var(--card) }
@@ -22,13 +24,15 @@
   main { padding:0 16px 32px; max-width:1300px; margin:0 auto }
   section { display:none } section.on { display:block }
   .grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(170px, 1fr)); gap:10px; margin:12px 0 }
+  .grid.hero .v { font-size:24px }
   .card { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:10px 12px }
   .card .k { color:var(--muted); font-size:12px } .card .v { font-size:20px; font-weight:600; font-variant-numeric:tabular-nums }
+  .card .s { color:var(--muted); font-size:12px; margin-top:2px }
   .tablewrap { overflow-x:auto; background:var(--card); border:1px solid var(--line); border-radius:8px }
   table { border-collapse:collapse; width:100%; font-variant-numeric:tabular-nums }
   th, td { padding:6px 8px; border-bottom:1px solid var(--line); text-align:left; white-space:nowrap }
   th { font-size:12px; color:var(--muted); font-weight:600; position:sticky; top:0; background:var(--card) }
-  td.n, th.n { text-align:right }
+  td.n, th.n { text-align:right } td.wrap { white-space:normal; min-width:240px }
   .pos { color:var(--pos) } .neg { color:var(--neg) } .warn { color:var(--warn) }
   .BET { color:var(--pos); font-weight:700 } .NO_BET { color:var(--muted) }
   .charts { display:grid; grid-template-columns:repeat(auto-fill, minmax(380px, 1fr)); gap:12px; margin-top:12px }
@@ -37,9 +41,12 @@
   dialog { max-width:760px; width:92vw; border:1px solid var(--line); border-radius:8px; background:var(--card); color:var(--ink) }
   pre { white-space:pre-wrap; word-break:break-word; font-size:12px }
   .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin:12px 0 }
-  .btn { background:var(--card); color:var(--ink); border:1px solid var(--line); padding:6px 10px; border-radius:6px; cursor:pointer; text-decoration:none }
+  .btn, input, select { background:var(--card); color:var(--ink); border:1px solid var(--line); padding:6px 10px; border-radius:6px; font:inherit }
+  .btn { cursor:pointer; text-decoration:none }
+  input[type=search] { min-width:260px }
   h2 { font-size:15px; margin:18px 0 6px }
-  @media (max-width:500px) { .charts { grid-template-columns:1fr } }
+  .note { color:var(--muted); max-width:900px }
+  @media (max-width:500px) { .charts { grid-template-columns:1fr } input[type=search] { min-width:0; width:100% } }
 </style>
 </head>
 <body>
@@ -47,36 +54,61 @@
   <h1>Weather Paper Bot</h1>
   <span class="badge paper" id="modeBadge">PAPER TRADING</span>
   <span class="muted">Real money: $0</span>
+  <span class="muted" id="expLine"></span>
   <span class="muted" id="statusLine"></span>
 </header>
 <nav id="tabs">
   <button data-t="overview" class="on">Overview</button>
-  <button data-t="markets">Active markets</button>
+  <button data-t="markets">Live markets</button>
+  <button data-t="portfolio">Portfolio</button>
   <button data-t="bets">Bet history</button>
-  <button data-t="performance">Performance</button>
-  <button data-t="status">System status</button>
+  <button data-t="performance">Model performance</button>
+  <button data-t="learning">Learning</button>
+  <button data-t="status">System health</button>
 </nav>
 <main>
 <section id="overview" class="on">
+  <div class="grid hero" id="heroKpis"></div>
   <div class="grid" id="kpis"></div>
   <div class="row">
     <a class="btn" href="/export/all.zip">Export everything (zip)</a>
     <a class="btn" href="/export/paper_bets.csv">Bets CSV</a>
     <a class="btn" href="/export/report.md">Report (markdown)</a>
   </div>
-  <h2>Open positions</h2>
-  <div class="tablewrap"><table id="openTbl"></table></div>
 </section>
 
 <section id="markets">
-  <p class="muted">Latest prediction and signal for every monitored market. A signal only becomes a paper bet when every rule passes. Click a row to see why.</p>
+  <p class="note">Latest prediction and signal for every monitored market. Probabilities are for the side the signal picked; the rules use the calibrated one (the raw one while no calibrator is approved). A signal only becomes a paper bet when every rule passes. Click a row to see why.</p>
+  <div class="row">
+    <input type="search" id="mktSearch" placeholder="Filter markets (city, date, bucket…)">
+    <label><input type="checkbox" id="mktBets"> only BET signals or open positions</label>
+    <span class="muted" id="mktCount"></span>
+  </div>
   <div class="tablewrap"><table id="mktTbl"></table></div>
   <h2>Markets not traded</h2>
   <p class="muted" id="skipCriteria"></p>
   <div class="tablewrap"><table id="skipTbl"></table></div>
 </section>
 
+<section id="portfolio">
+  <div class="grid" id="pfKpis"></div>
+  <h2>Risk limits in use</h2>
+  <p class="note">The share of each limit the open positions use. Limits are a share of equity (the daily loss limit is a share of the starting bankroll); the engine sizes every new bet to fit all of them.</p>
+  <div class="tablewrap"><table id="capTbl"></table></div>
+  <h2>Open positions</h2>
+  <p class="note">Valued at the best bid of the side held (the side's last price when there is no bid, cost when there is no quote). Each share pays $1 if the side wins.</p>
+  <div class="tablewrap"><table id="openTbl"></table></div>
+  <h2>Exposure by city and day</h2>
+  <div class="tablewrap"><table id="cdTbl"></table></div>
+</section>
+
 <section id="bets">
+  <div class="row">
+    <input type="search" id="betSearch" placeholder="Search bets: city, date, bucket, #id…">
+    <select id="betStatus"><option value="">Any status</option><option>OPEN</option><option>WON</option><option>LOST</option><option>VOID</option></select>
+    <select id="betSide"><option value="">Either side</option><option>YES</option><option>NO</option></select>
+    <span class="muted" id="betCount"></span>
+  </div>
   <div class="tablewrap"><table id="betTbl"></table></div>
 </section>
 
@@ -88,10 +120,35 @@
     <div class="card"><canvas id="cWL"></canvas></div>
     <div class="card"><canvas id="cCal"></canvas></div>
     <div class="card"><canvas id="cMM"></canvas></div>
+    <div class="card"><canvas id="cBrier"></canvas></div>
+    <div class="card"><canvas id="cLL"></canvas></div>
+    <div class="card"><canvas id="cAcc"></canvas></div>
   </div>
   <h2>Calibration of all predictions on resolved markets</h2>
   <p class="muted" id="calNote"></p>
   <div class="tablewrap"><table id="calTbl"></table></div>
+  <h2>Model comparison</h2>
+  <p class="note" id="cmpNote"></p>
+  <div class="tablewrap"><table id="cmpTbl"></table></div>
+  <h2>Scores by market day</h2>
+  <p class="note">The daily charts as a table. Each day is scored on the markets that had a market price when the decision prediction was made (its last made a day or more ahead), so model and market are compared on the same markets. Lower Brier and log loss are better.</p>
+  <div class="tablewrap"><table id="dayTbl"></table></div>
+</section>
+
+<section id="learning">
+  <p class="note" id="lrnNote"></p>
+  <h2>Recurring weaknesses</h2>
+  <div class="tablewrap"><table id="weakTbl"></table></div>
+  <h2>Error classes</h2>
+  <div class="tablewrap"><table id="clsTbl"></table></div>
+  <h2>Predictions broken down</h2>
+  <div class="row"><select id="dimSel"></select><span class="muted">bias = mean predicted YES − share that resolved YES; confident = mean probability of the side predicted; right side = how often it happened</span></div>
+  <div class="tablewrap"><table id="dimTbl"></table></div>
+  <h2>Bets broken down</h2>
+  <div class="row"><select id="betDimSel"></select></div>
+  <div class="tablewrap"><table id="betDimTbl"></table></div>
+  <h2>Largest errors</h2>
+  <div class="tablewrap"><table id="bigTbl"></table></div>
 </section>
 
 <section id="status">
@@ -101,10 +158,16 @@
     <button class="btn" onclick="post('/api/pause?paused=true')">Pause loop</button>
     <button class="btn" onclick="post('/api/pause?paused=false')">Resume loop</button>
   </div>
+  <h2>Data sources</h2>
+  <div class="tablewrap"><table id="srcTbl"></table></div>
   <h2>Errors and warnings</h2>
   <div class="tablewrap"><table id="probTbl"></table></div>
   <h2>Recent events</h2>
   <div class="tablewrap"><table id="evTbl"></table></div>
+  <h2>Models</h2>
+  <div class="tablewrap"><table id="mdlTbl"></table></div>
+  <h2>Database</h2>
+  <div class="tablewrap"><table id="dbTbl"></table></div>
   <h2>Active configuration</h2>
   <div class="card"><pre id="cfg"></pre></div>
 </section>
@@ -120,141 +183,298 @@ const num = (x, d = 3) => x == null ? "–" : Number(x).toFixed(d);
 const cls = x => x == null ? "" : x > 0 ? "pos" : x < 0 ? "neg" : "";
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const when = s => s ? new Date(String(s).replace(" ", "T") + (/[zZ+]/.test(String(s).slice(10)) ? "" : "Z")).toLocaleString() : "–";
+const small = s => `<span class="muted" style="font-size:13px">${s}</span>`;
+const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
 async function get(u) { const r = await fetch(u); if (!r.ok) throw new Error(u + " " + r.status); return r.json(); }
 async function post(u) { await fetch(u, {method: "POST"}); setTimeout(refresh, 800); }
+const debounce = (f, ms = 250) => { let t; return () => { clearTimeout(t); t = setTimeout(f, ms); }; };
 
+const lazy = {performance: () => loadPerf(), learning: () => loadLearning(), portfolio: () => loadPortfolio()};
 document.querySelectorAll("#tabs button").forEach(b => b.onclick = () => {
   document.querySelectorAll("#tabs button, section").forEach(x => x.classList.remove("on"));
   b.classList.add("on"); $("#" + b.dataset.t).classList.add("on");
   try { localStorage.setItem("tab", b.dataset.t); } catch (e) {}
-  if (b.dataset.t === "performance") loadPerf();
+  lazy[b.dataset.t]?.().catch(console.error);
 });
 try { const t = localStorage.getItem("tab"); if (t) document.querySelector(`#tabs button[data-t=${t}]`)?.click(); } catch (e) {}
 
 function table(el, cols, rows, onclick) {
   if (!rows.length) { el.innerHTML = `<tr><td class="muted">Nothing yet.</td></tr>`; return; }
-  el.innerHTML = "<tr>" + cols.map(c => `<th class="${c.n ? "n" : ""}">${c.h}</th>`).join("") + "</tr>" +
+  el.innerHTML = "<tr>" + cols.map(c => `<th class="${c.n ? "n" : ""}" ${c.t ? `title="${esc(c.t)}"` : ""}>${c.h}</th>`).join("") + "</tr>" +
     rows.map((r, i) => `<tr data-i="${i}" ${onclick ? 'class="link"' : ""}>` +
-      cols.map(c => `<td class="${c.n ? "n " : ""}${c.c ? c.c(r) : ""}">${c.f(r)}</td>`).join("") + "</tr>").join("");
+      cols.map(c => `<td class="${c.n ? "n " : ""}${c.w ? "wrap " : ""}${c.c ? c.c(r) : ""}">${c.f(r)}</td>`).join("") + "</tr>").join("");
   if (onclick) el.querySelectorAll("tr[data-i]").forEach(tr => tr.onclick = () => onclick(rows[tr.dataset.i]));
 }
 
 function kpis(el, items) {
-  el.innerHTML = items.map(([k, v, c]) => `<div class="card"><div class="k">${k}</div><div class="v ${c || ""}">${v}</div></div>`).join("");
+  el.innerHTML = items.map(([k, v, c, s]) => `<div class="card"><div class="k">${k}</div><div class="v ${c || ""}">${v}</div>${s ? `<div class="s">${s}</div>` : ""}</div>`).join("");
 }
 
+// -- overview ---------------------------------------------------------------------
 async function loadOverview() {
   const o = await get("/api/overview");
+  const e = o.experiment;
+  $("#expLine").textContent = e ? `Experiment ${e.name} · started ${when(e.started_at)} · code ${(e.code_ref || e.git_ref || "unknown").slice(0, 12)}` : "";
+  kpis($("#heroKpis"), [
+    ["Starting bankroll", usd(o.starting_bankroll)],
+    ["Current equity", usd(o.equity), "", "open positions at the bid"],
+    ["P/L", usd(o.total_pnl), cls(o.total_pnl), `realized ${usd(o.realized_pnl)} · unrealized ${usd(o.unrealized_pnl)}`],
+    ["ROI", pct(o.return_on_bankroll), cls(o.return_on_bankroll), "on the starting bankroll"],
+    ["Active positions", o.n_open_positions, "", `${usd(o.open_exposure)} at cost`],
+  ]);
   kpis($("#kpis"), [
-    ["Virtual bankroll (equity)", usd(o.equity)], ["Starting bankroll", usd(o.starting_bankroll)],
-    ["Total simulated P/L", usd(o.total_pnl), cls(o.total_pnl)], ["Return on bankroll", pct(o.return_on_bankroll), cls(o.return_on_bankroll)],
+    ["Cash available", usd(o.available_cash)],
+    ["Open positions at the bid (unrealized P/L)", `${usd(o.market_value)} ${small("(" + usd(o.unrealized_pnl) + ")")}`, cls(o.unrealized_pnl)],
     ["ROI on settled stakes", pct(o.roi_on_staked), cls(o.roi_on_staked)],
-    ["Bets (settled / open)", `${o.n_bets} <span class="muted" style="font-size:13px">(${o.n_settled} / ${o.n_open})</span>`],
-    ["Win rate (predicted)", `${pct(o.win_rate)} <span class="muted" style="font-size:13px">(${pct(o.expected_win_rate)})</span>`],
-    ["Avg model confidence", pct(o.avg_confidence)], ["Avg edge", num(o.avg_edge)],
-    ["Cash / open exposure", `${usd(o.cash)} / ${usd(o.open_exposure)}`],
-    ["Open positions at the bid (unrealized P/L)", `${usd(o.market_value)} (${usd(o.unrealized_pnl)})`, cls(o.unrealized_pnl)],
-    ["Max drawdown", `${usd(o.max_drawdown)} <span class="muted" style="font-size:13px">(${pct(o.max_drawdown_pct)})</span>`, o.max_drawdown > 0 ? "neg" : ""],
     ["ROI 95% interval", o.roi_95ci ? o.roi_95ci.map(pct).join(" to ") : "needs 5+ settled"],
+    ["Bets (settled / open)", `${o.n_bets} ${small(`(${o.n_settled} / ${o.n_open})`)}`],
+    ["Win rate (predicted)", `${pct(o.win_rate)} ${small(`(${pct(o.expected_win_rate)})`)}`],
+    ["Avg model confidence", pct(o.avg_confidence)], ["Avg edge", num(o.avg_edge)],
+    ["Max drawdown", `${usd(o.max_drawdown)} ${small(`(${pct(o.max_drawdown_pct)})`)}`, o.max_drawdown > 0 ? "neg" : ""],
   ]);
 }
 
+// -- live markets -----------------------------------------------------------------
+let marketRows = [];
+const quote = r => r.yes_bid == null && r.yes_ask == null ? num(r.yes_price, 2) : `${num(r.yes_bid, 2)} / ${num(r.yes_ask, 2)}`;
+const mktCols = [
+  {h: "Date", f: r => r.local_date}, {h: "Market", f: r => esc(r.event_title)}, {h: "Bucket", f: r => "<b>" + esc(r.bucket_label) + "</b>"},
+  {h: "Forecast", n: 1, f: r => `${num(r.mu_c, 1)}±${num(r.sigma_c, 1)}°C`},
+  {h: "YES bid / ask", n: 1, t: "Current price: best bid and ask for YES in the latest market snapshot", f: quote},
+  {h: "Side", f: r => r.side},
+  {h: "Model", n: 1, t: "Raw model probability of the side", f: r => pct(r.model_prob)},
+  {h: "Calibrated (confidence)", n: 1, t: "What the rules use", f: r => pct(r.calibrated_prob ?? r.confidence)},
+  {h: "Market", n: 1, t: "Mid-implied probability of the side", f: r => pct(r.market_prob)},
+  {h: "Entry", n: 1, f: r => num(r.entry_price)},
+  {h: "Edge", n: 1, f: r => num(r.edge), c: r => cls(r.edge)}, {h: "EV/$", n: 1, f: r => num(r.ev_per_dollar), c: r => cls(r.ev_per_dollar)},
+  {h: "Signal", f: r => r.decision, c: r => r.decision},
+  {h: "Position", f: r => r.position ? `${r.position.side} ${usd(r.position.cost)} → ${usd(r.position.value)}` : "", c: r => r.position ? cls(r.position.unrealized_pnl) : ""},
+  {h: "Why", f: r => esc(r.reason)},
+];
+function renderMarkets() {
+  const words = $("#mktSearch").value.toLowerCase().split(/\s+/).filter(Boolean), only = $("#mktBets").checked;
+  const rows = marketRows.filter(r => (!only || r.decision === "BET" || r.position) &&
+    words.every(w => [r.event_title, r.bucket_label, r.local_date, r.station, r.side, r.decision].join(" ").toLowerCase().includes(w)));
+  $("#mktCount").textContent = `${rows.length} of ${marketRows.length} markets`;
+  table($("#mktTbl"), mktCols, rows, r => showSignal(r.signal_id));
+}
+$("#mktSearch").oninput = debounce(renderMarkets); $("#mktBets").onchange = renderMarkets;
+async function loadMarkets() {
+  const d = await get("/api/markets");
+  marketRows = d.markets; renderMarkets();
+  table($("#skipTbl"), [{h: "Reason", f: r => esc(r.skip_reason)}, {h: "Markets", n: 1, f: r => r.n}], d.skipped);
+  $("#skipCriteria").textContent = `${d.skipped_criteria} skipped because the resolution criteria in the market text did not match the title or bucket.`;
+}
+
+// -- portfolio --------------------------------------------------------------------
+async function loadPortfolio() {
+  const d = await get("/api/portfolio"), t = d.totals;
+  kpis($("#pfKpis"), [
+    ["Equity", usd(d.equity)], ["Cash", usd(d.cash)],
+    ["Open positions", t.n, "", `${usd(t.cost)} at cost`],
+    ["Value at the bid", usd(t.value), "", `unrealized ${usd(t.unrealized_pnl)}`],
+    ["Potential payout", usd(t.potential_payout), "", `max profit ${usd(t.max_profit)}`],
+    ["Expected P/L", usd(t.expected_pnl), cls(t.expected_pnl), "at each bet's calibrated probability"],
+    ["If every position loses", usd(d.scenarios.all_lose), "neg", `equity ${usd(d.scenarios.all_lose - d.equity)}`],
+    ["If every position wins", usd(d.scenarios.all_win), "pos", `equity +${usd(d.scenarios.all_win - d.equity)}`],
+  ]);
+  table($("#capTbl"), [
+    {h: "Limit", f: r => esc(r.limit_name)}, {h: "Where", f: r => esc(r.group ?? "")},
+    {h: "Used", n: 1, f: r => usd(r.used)}, {h: "Limit", n: 1, f: r => `${usd(r.limit)} ${small("(" + pct(r.pct) + ")")}`},
+    {h: "Share used", n: 1, f: r => pct(r.share), c: r => r.share >= 1 ? "neg" : r.share >= 0.8 ? "warn" : ""},
+  ], d.caps);
+  table($("#openTbl"), [
+    {h: "#", f: r => r.bet_id}, {h: "Opened", f: r => when(r.opened_at)},
+    {h: "Market", f: r => esc(r.event_title) + " · <b>" + esc(r.bucket_label) + "</b>"}, {h: "Side", f: r => r.side},
+    {h: "Entry", n: 1, f: r => num(r.entry_price)}, {h: "Shares", n: 1, f: r => num(r.shares, 2)},
+    {h: "Cost", n: 1, f: r => usd(r.cost)},
+    {h: "Mark", n: 1, f: r => r.mark_price == null ? "cost" : num(r.mark_price) + (r.marked_by === "price" ? " (price)" : "")},
+    {h: "Value", n: 1, f: r => usd(r.value)}, {h: "Unrealized", n: 1, f: r => usd(r.unrealized_pnl), c: r => cls(r.unrealized_pnl)},
+    {h: "Potential payout", n: 1, f: r => usd(r.potential_payout)}, {h: "Max loss", n: 1, f: r => usd(r.max_loss)},
+    {h: "% of equity", n: 1, f: r => pct(r.pct_of_equity)}, {h: "Confidence", n: 1, f: r => pct(r.confidence)},
+    {h: "Hours left", n: 1, t: "Until the end of the target day; then it waits for the result", f: r => r.hours_left == null ? "–" : r.hours_left > 0 ? num(r.hours_left, 0) : "awaiting result"},
+  ], d.positions, r => get("/api/bets?q=%23" + r.bet_id).then(b => b[0] && showSignal(b[0].signal_id)));
+  table($("#cdTbl"), [{h: "City and day", f: r => esc(r.group)}, {h: "Positions", n: 1, f: r => r.n},
+    {h: "Cost", n: 1, f: r => usd(r.cost)}, {h: "Value", n: 1, f: r => usd(r.value)}], d.by_city_day);
+}
+
+// -- bet history ------------------------------------------------------------------
 const betCols = [
-  {h: "#", f: r => r.id}, {h: "Opened", f: r => when(r.opened_at)},
+  {h: "#", f: r => r.id}, {h: "Opened", f: r => when(r.opened_at)}, {h: "Day", f: r => r.local_date},
   {h: "Market", f: r => esc(r.event_title) + " · <b>" + esc(r.bucket_label) + "</b>"},
   {h: "Side", f: r => r.side}, {h: "Entry", n: 1, f: r => num(r.entry_price)},
   {h: "Market prob", n: 1, f: r => pct(r.market_prob)}, {h: "Model prob", n: 1, f: r => pct(r.model_prob)},
+  {h: "Confidence", n: 1, f: r => pct(r.confidence)},
   {h: "Edge", n: 1, f: r => num(r.edge)}, {h: "EV/$", n: 1, f: r => num(r.ev_per_dollar)},
   {h: "Stake", n: 1, f: r => usd(r.stake)}, {h: "Shares", n: 1, f: r => num(r.shares, 2)},
   {h: "Status", f: r => r.status, c: r => r.status === "WON" ? "pos" : r.status === "LOST" ? "neg" : ""},
   {h: "P/L", n: 1, f: r => usd(r.pnl), c: r => cls(r.pnl)}, {h: "Bankroll after", n: 1, f: r => usd(r.bankroll_after)},
 ];
-
+let betTotal = null;
 async function loadBets() {
-  const bets = await get("/api/bets");
+  const q = new URLSearchParams({q: $("#betSearch").value, status: $("#betStatus").value, side: $("#betSide").value});
+  const bets = await get("/api/bets?" + q);
+  if (!q.get("q") && !q.get("status") && !q.get("side")) betTotal = bets.length;
+  $("#betCount").textContent = `${bets.length} bet${bets.length === 1 ? "" : "s"}` + (betTotal != null && betTotal !== bets.length ? ` of ${betTotal}` : "");
   table($("#betTbl"), betCols, bets, r => showSignal(r.signal_id));
-  table($("#openTbl"), betCols.filter(c => !["P/L", "Bankroll after", "Status"].includes(c.h)), bets.filter(b => b.status === "OPEN"), r => showSignal(r.signal_id));
 }
-
-async function loadMarkets() {
-  const d = await get("/api/markets");
-  table($("#mktTbl"), [
-    {h: "Date", f: r => r.local_date}, {h: "Market", f: r => esc(r.event_title)}, {h: "Bucket", f: r => "<b>" + esc(r.bucket_label) + "</b>"},
-    {h: "Forecast", n: 1, f: r => `${num(r.mu_c, 1)}±${num(r.sigma_c, 1)}°C`},
-    {h: "Side", f: r => r.side},
-    {h: "Market prob", n: 1, f: r => pct(r.market_prob)}, {h: "Model prob", n: 1, f: r => pct(r.model_prob)},
-    {h: "Entry", n: 1, f: r => num(r.entry_price)},
-    {h: "Edge", n: 1, f: r => num(r.edge), c: r => cls(r.edge)}, {h: "Confidence", n: 1, f: r => pct(r.confidence)},
-    {h: "Signal", f: r => r.decision, c: r => r.decision}, {h: "Why", f: r => esc(r.reason)},
-  ], d.markets, r => showSignal(r.signal_id));
-  table($("#skipTbl"), [{h: "Reason", f: r => esc(r.skip_reason)}, {h: "Markets", n: 1, f: r => r.n}], d.skipped);
-  $("#skipCriteria").textContent = `${d.skipped_criteria} skipped because the resolution criteria in the market text did not match the title or bucket.`;
-}
+$("#betSearch").oninput = debounce(() => loadBets().catch(console.error));
+$("#betStatus").onchange = $("#betSide").onchange = () => loadBets().catch(console.error);
 
 async function showSignal(id) {
   const d = await get("/api/signals/" + id);
   const s = d.signal, p = d.prediction, m = d.market;
-  const rules = (s.rule_results || []).filter(r => r.rule !== "sizing_detail");
+  const rules = (s.rule_results || []).filter(r => !["sizing_detail", "probabilities"].includes(r.rule));
   const sizing = (s.rule_results || []).find(r => r.rule === "sizing_detail");
   $("#dlgBody").innerHTML = `<h2>${esc(m.question)}</h2>
     <p class="muted">Station ${esc(m.station)} · ${esc(m.local_date)} · <a href="https://polymarket.com/event/${esc(m.event_slug)}" target="_blank" rel="noopener">Polymarket</a></p>
-    <p><b class="${s.decision}">${s.decision}</b> ${esc(s.side)} · model ${pct(s.model_prob)} vs market ${pct(s.market_prob)} · entry ${num(s.entry_price)} · edge ${num(s.edge)} · EV/$ ${num(s.ev_per_dollar)}</p>
+    <p><b class="${s.decision}">${s.decision}</b> ${esc(s.side)} · model ${pct(s.model_prob)} · calibrated ${pct(s.calibrated_prob ?? s.confidence)} · market ${pct(s.market_prob)} · entry ${num(s.entry_price)} · edge ${num(s.edge)} · EV/$ ${num(s.ev_per_dollar)}</p>
     <table>${"<tr><th>Rule</th><th>Pass</th><th>Value</th><th>Threshold</th></tr>" + rules.map(r =>
       `<tr><td>${r.rule}</td><td class="${r.passed ? "pos" : "neg"}">${r.passed ? "yes" : "no"}</td><td>${esc(JSON.stringify(r.value))}</td><td>${esc(r.threshold)}</td></tr>`).join("")}</table>
     ${sizing ? `<h2>Sizing</h2><pre>${esc(JSON.stringify(sizing.value, null, 2))}</pre>` : ""}
-    <h2>Prediction #${p.id} (${esc(p.model_version)}, made ${when(p.ts)})</h2>
+    <h2>Prediction #${p.id} (${esc(p.model_version)}, calibrator ${esc(p.calibrator_version || "none")}, made ${when(p.ts)})</h2>
     <pre>${esc(JSON.stringify(p.inputs, null, 2))}</pre>
     ${d.bet ? `<h2>Paper bet #${d.bet.id}</h2><pre>${esc(JSON.stringify(d.bet, null, 2))}</pre>` : ""}`;
   $("#dlg").showModal();
 }
 
+// -- model performance ------------------------------------------------------------
 const charts = {};
 function chart(id, cfg) { charts[id]?.destroy(); charts[id] = new Chart($("#" + id), cfg); }
-const lineOpts = t => ({responsive: true, maintainAspectRatio: false, plugins: {title: {display: true, text: t}, legend: {display: false}}, scales: {x: {ticks: {maxTicksLimit: 6}}}});
+function opts(title, legend = false, yRange = null) {
+  const grid = {color: css("--line")}, ticks = {color: css("--muted")};
+  return {responsive: true, maintainAspectRatio: false, interaction: {mode: "index", intersect: false},
+    plugins: {title: {display: true, text: title, color: css("--ink")}, legend: {display: legend, labels: {color: css("--ink")}}},
+    scales: {x: {ticks: {...ticks, maxTicksLimit: 6}, grid}, y: {ticks, grid, ...(yRange || {})}}};
+}
+const line = (label, data, color, dash) => ({label, data, borderColor: color, backgroundColor: color, borderWidth: 2, pointRadius: 3, borderDash: dash || [], spanGaps: true});
+const scatterOpts = (title, xl, yl) => {
+  const o = opts(title, true); o.interaction = {mode: "nearest", intersect: true};
+  o.scales.x = {...o.scales.x, min: 0, max: 1, title: {display: true, text: xl}}; o.scales.y = {...o.scales.y, min: 0, max: 1, title: {display: true, text: yl}};
+  return o;
+};
 
 async function loadPerf() {
   const d = await get("/api/performance");
-  const short = t => String(t).slice(5, 16);
-  chart("cBank", {type: "line", data: {labels: d.bankroll.map(r => short(r.t)), datasets: [{data: d.bankroll.map(r => r.equity), pointRadius: 0, borderWidth: 2}]}, options: lineOpts("Bankroll (equity, open bets at the bid)")});
-  chart("cPnl", {type: "line", data: {labels: d.cumulative_pnl.map(r => short(r.t)), datasets: [{data: d.cumulative_pnl.map(r => r.pnl), pointRadius: 2, borderWidth: 2}]}, options: lineOpts("Cumulative realized P/L")});
-  chart("cDD", {type: "line", data: {labels: d.drawdown.map(r => short(r.t)), datasets: [{data: d.drawdown.map(r => -r.dd), pointRadius: 0, fill: true, borderWidth: 1}]}, options: lineOpts("Drawdown ($)")});
-  chart("cWL", {type: "bar", data: {labels: d.cumulative_pnl.map((r, i) => i + 1), datasets: [{data: d.cumulative_pnl.map(r => r.bet_pnl), backgroundColor: d.cumulative_pnl.map(r => r.won ? "#1a7f45" : "#b3261e")}]}, options: lineOpts("Win / loss per settled bet ($)")});
-  const pc = d.prediction_calibration, bins = pc.bins, bb = d.bet_calibration;
+  const short = t => String(t).slice(5, 16), s1 = css("--s1"), s2 = css("--s2"), s3 = css("--s3"), muted = css("--muted");
+  chart("cBank", {type: "line", data: {labels: d.bankroll.map(r => short(r.t)), datasets: [{...line("Equity", d.bankroll.map(r => r.equity), s1), pointRadius: 0}]}, options: opts("Bankroll (equity, open bets at the bid)")});
+  chart("cPnl", {type: "line", data: {labels: d.cumulative_pnl.map(r => short(r.t)), datasets: [line("P/L", d.cumulative_pnl.map(r => r.pnl), s1)]}, options: opts("Cumulative realized P/L ($)")});
+  chart("cDD", {type: "line", data: {labels: d.drawdown.map(r => short(r.t)), datasets: [{...line("Drawdown", d.drawdown.map(r => -r.dd), css("--neg")), pointRadius: 0, fill: true, borderWidth: 1}]}, options: opts("Drawdown ($)")});
+  chart("cWL", {type: "bar", data: {labels: d.cumulative_pnl.map((r, i) => i + 1), datasets: [{label: "P/L", data: d.cumulative_pnl.map(r => r.bet_pnl), borderRadius: 4, backgroundColor: d.cumulative_pnl.map(r => r.won ? css("--pos") : css("--neg"))}]}, options: opts("Win / loss per settled bet ($)")});
+  const pc = d.prediction_calibration, bins = pc.bins, cb = pc.bins_calibrated || [], bb = d.bet_calibration;
+  const pts = b => b.map(x => ({x: x.mean_pred, y: x.observed, n: x.n}));
   chart("cCal", {type: "scatter", data: {datasets: [
-    {label: "All predictions", data: bins.map(b => ({x: b.mean_pred, y: b.observed})), pointRadius: bins.map(b => Math.min(12, 3 + Math.sqrt(b.n)))},
-    {label: "Bets", data: bb.map(b => ({x: b.mean_pred, y: b.observed})), pointStyle: "triangle", pointRadius: 6},
-    {label: "Perfect", type: "line", data: [{x: 0, y: 0}, {x: 1, y: 1}], pointRadius: 0, borderDash: [4, 4], borderWidth: 1}]},
-    options: {responsive: true, maintainAspectRatio: false, plugins: {title: {display: true, text: "Calibration: predicted vs observed"}},
-      scales: {x: {min: 0, max: 1, title: {display: true, text: "predicted"}}, y: {min: 0, max: 1, title: {display: true, text: "observed"}}}}});
+    {label: "Raw model", data: pts(bins), backgroundColor: s1, borderColor: s1, pointRadius: bins.map(b => Math.min(12, 4 + Math.sqrt(b.n)))},
+    ...(pc.n_calibrated ? [{label: "Calibrated", data: pts(cb), backgroundColor: s3, borderColor: s3, pointStyle: "rectRot", pointRadius: cb.map(b => Math.min(12, 4 + Math.sqrt(b.n)))}] : []),
+    {label: "Bets", data: pts(bb), backgroundColor: s2, borderColor: s2, pointStyle: "triangle", pointRadius: 7},
+    {label: "Perfect", type: "line", data: [{x: 0, y: 0}, {x: 1, y: 1}], pointRadius: 0, borderColor: muted, borderDash: [4, 4], borderWidth: 1}]},
+    options: scatterOpts("Calibration: predicted vs observed", "predicted", "observed")});
   chart("cMM", {type: "scatter", data: {datasets: [
-    {label: "Bets", data: d.bets_scatter.filter(r => r.market != null).map(r => ({x: r.market, y: r.model})), pointRadius: 4},
-    {label: "Equal", type: "line", data: [{x: 0, y: 0}, {x: 1, y: 1}], pointRadius: 0, borderDash: [4, 4], borderWidth: 1}]},
-    options: {responsive: true, maintainAspectRatio: false, plugins: {title: {display: true, text: "Model vs market probability (bets)"}},
-      scales: {x: {min: 0, max: 1, title: {display: true, text: "market"}}, y: {min: 0, max: 1, title: {display: true, text: "model"}}}}});
-  $("#calNote").textContent = `${pc.n} resolved markets · Brier model ${num(pc.brier_model, 4)} vs market ${num(pc.brier_market, 4)} (lower is better)`;
+    {label: "Bets", data: d.bets_scatter.filter(r => r.market != null).map(r => ({x: r.market, y: r.model})), backgroundColor: s1, borderColor: s1, pointRadius: 4},
+    {label: "Equal", type: "line", data: [{x: 0, y: 0}, {x: 1, y: 1}], pointRadius: 0, borderColor: muted, borderDash: [4, 4], borderWidth: 1}]},
+    options: scatterOpts("Model vs market probability (bets)", "market", "model")});
+  const days = d.daily_scores, labels = days.map(r => r.day.slice(5));
+  chart("cBrier", {type: "line", data: {labels, datasets: [line("Model (raw)", days.map(r => r.brier_model), s1), line("As used (calibrated)", days.map(r => r.brier_used), s3, [2, 3]), line("Market", days.map(r => r.brier_market), s2, [6, 4])]}, options: opts("Brier score by market day (lower is better)", true)});
+  chart("cLL", {type: "line", data: {labels, datasets: [line("Model (raw)", days.map(r => r.log_loss_model), s1), line("As used (calibrated)", days.map(r => r.log_loss_used), s3, [2, 3]), line("Market", days.map(r => r.log_loss_market), s2, [6, 4])]}, options: opts("Log loss by market day (lower is better)", true)});
+  chart("cAcc", {type: "line", data: {labels, datasets: [line("Model", days.map(r => r.top_bucket_model), s1), line("Market", days.map(r => r.top_bucket_market), s2, [6, 4])]},
+    options: opts("Accuracy: the most likely bucket won (share of events)", true, {min: 0, max: 1})});
+  $("#calNote").textContent = `${pc.n} resolved markets · Brier model ${num(pc.brier_model, 4)} vs market ${num(pc.brier_market, 4)} · log loss ${num(pc.log_loss_model, 4)} · calibration error ${num(pc.ece_model, 4)}` +
+    (pc.n_calibrated ? ` · after calibration (${pc.n_calibrated} markets): Brier ${num(pc.brier_calibrated, 4)}, log loss ${num(pc.log_loss_calibrated, 4)}` : " · no approved calibrator yet, so the raw probabilities were used");
   table($("#calTbl"), [{h: "Predicted", f: r => r.bin}, {h: "n", n: 1, f: r => r.n}, {h: "Mean predicted", n: 1, f: r => pct(r.mean_pred)}, {h: "Observed", n: 1, f: r => pct(r.observed)}], bins);
+  const mc = d.model_comparison;
+  $("#cmpNote").textContent = `Every model's prediction from the same cycle as the production model's last prediction made ${mc.min_lead_days}+ day ahead, on ${mc.n_markets} resolved markets. Each row is scored on the markets that model predicted, and the production columns on exactly those markets.`;
+  table($("#cmpTbl"), [{h: "Model", f: r => esc(r.model)}, {h: "Role", f: r => r.role}, {h: "Markets", n: 1, f: r => r.n},
+    {h: "Brier", n: 1, f: r => num(r.brier, 4)}, {h: "Log loss", n: 1, f: r => num(r.log_loss, 4)},
+    {h: "Production Brier", n: 1, f: r => num(r.production_brier, 4)}, {h: "Production log loss", n: 1, f: r => num(r.production_log_loss, 4)}], mc.models);
+  table($("#dayTbl"), [{h: "Day", f: r => r.day}, {h: "Markets", n: 1, f: r => r.n},
+    {h: "Brier model", n: 1, f: r => num(r.brier_model, 4)}, {h: "Brier as used", n: 1, f: r => num(r.brier_used, 4)}, {h: "Brier market", n: 1, f: r => num(r.brier_market, 4)},
+    {h: "Log loss model", n: 1, f: r => num(r.log_loss_model, 4)}, {h: "Log loss market", n: 1, f: r => num(r.log_loss_market, 4)},
+    {h: "Events", n: 1, f: r => r.n_events}, {h: "Top bucket won: model", n: 1, f: r => pct(r.top_bucket_model)}, {h: "market", n: 1, f: r => pct(r.top_bucket_market)}], [...days].reverse());
 }
 
+// -- learning ----------------------------------------------------------------------
+const flagText = g => g.flags.map(f => `<span class="${f.weakness ? "neg" : "pos"}">${esc(f.flag)}</span>`).join(", ");
+const predCols = [
+  {h: "Group", f: r => esc(r.group)}, {h: "Markets", n: 1, f: r => r.n},
+  {h: "Mean predicted", n: 1, f: r => pct(r.mean_pred)}, {h: "Resolved YES", n: 1, f: r => pct(r.observed)},
+  {h: "Bias", n: 1, f: r => (r.bias >= 0 ? "+" : "") + (r.bias * 100).toFixed(1) + " pts"},
+  {h: "Confident", n: 1, f: r => pct(r.confidence)}, {h: "Right side", n: 1, f: r => pct(r.right_side)},
+  {h: "Brier", n: 1, f: r => num(r.brier, 4)}, {h: "Log loss", n: 1, f: r => num(r.log_loss, 4)},
+  {h: "Brier vs market", n: 1, t: "Model and market Brier on the markets that had a price", f: r => r.n_market ? `${num(r.brier_model_paired, 4)} / ${num(r.brier_market, 4)}` : "–",
+   c: r => r.brier_model_paired == null ? "" : r.brier_model_paired > r.brier_market ? "neg" : "pos"},
+  {h: "Big misses", n: 1, t: "Significant overconfidence or underestimation", f: r => r.significant_errors},
+  {h: "Flags", f: flagText},
+];
+const betDimCols = [
+  {h: "Group", f: r => esc(r.group)}, {h: "Bets", n: 1, f: r => r.n}, {h: "Won", n: 1, f: r => r.won},
+  {h: "Win rate", n: 1, f: r => pct(r.win_rate)}, {h: "Predicted", n: 1, f: r => pct(r.expected_win_rate)},
+  {h: "Staked", n: 1, f: r => usd(r.staked)}, {h: "P/L", n: 1, f: r => usd(r.pnl), c: r => cls(r.pnl)},
+  {h: "ROI", n: 1, f: r => pct(r.roi), c: r => cls(r.roi)}, {h: "Flags", f: flagText},
+];
+function fillSelect(el, dims, render) {
+  const keep = el.value;
+  el.innerHTML = dims.map((d, i) => `<option value="${i}">${esc(d.title)}</option>`).join("");
+  el.value = keep !== "" && keep < dims.length ? keep : Math.min(1, dims.length - 1);
+  el.onchange = render; render();
+}
+async function loadLearning() {
+  const e = await get("/api/errors");
+  $("#lrnNote").textContent = `${e.n} resolved markets, each scored on the production model's last prediction made ${e.min_lead_days}+ day before the target day, and ${e.bets.n} settled bets. ` +
+    `A group is flagged only with at least ${e.min_group} markets (${e.min_bet_group} bets) and a gap of at least ${e.flag_z} standard errors, so chance alone rarely flags one. ` +
+    "Overconfident: more sure of the side it predicted than that side's hit rate. YES too often or too rarely: the bias. Worse than the market: a higher Brier score than the market price on the same markets.";
+  if (e.weaknesses.length)
+    table($("#weakTbl"), [{h: "Where", f: r => r.scope}, {h: "Breakdown", f: r => esc(r.dimension)},
+      {h: "Group", f: r => esc(r.group)}, {h: "n", n: 1, f: r => r.n}, {h: "Weakness", f: r => r.flag, c: () => "neg"},
+      {h: "Evidence", w: 1, f: r => esc(r.detail)}, {h: "Std errors", n: 1, f: r => num(Math.abs(r.z), 1)}], e.weaknesses);
+  else $("#weakTbl").innerHTML = `<tr><td class="muted">None flagged yet: no group has enough markets with a gap that large.</td></tr>`;
+  table($("#clsTbl"), [{h: "Error class", f: r => r.class}, {h: "Markets", n: 1, f: r => r.n}, {h: "Share", n: 1, f: r => pct(r.share)}], e.classes);
+  fillSelect($("#dimSel"), e.dimensions, () => table($("#dimTbl"), predCols, e.dimensions[$("#dimSel").value]?.groups || []));
+  fillSelect($("#betDimSel"), e.bets.dimensions, () => table($("#betDimTbl"), betDimCols, e.bets.dimensions[$("#betDimSel").value]?.groups || []));
+  table($("#bigTbl"), [{h: "Day", f: r => r.local_date}, {h: "Market", w: 1, f: r => esc(r.question)},
+    {h: "Lead", n: 1, f: r => r.lead_days == null ? "–" : r.lead_days + " d"},
+    {h: "Model P(YES)", n: 1, f: r => pct(r.p_yes)}, {h: "Market P(YES)", n: 1, f: r => pct(r.market_yes)},
+    {h: "Result", f: r => r.outcome}, {h: "Class", f: r => r.class, c: () => "neg"},
+    {h: "σ from bucket", n: 1, t: "Forecast distance from the bucket in forecast standard deviations", f: r => num(r.distance, 2)},
+    {h: "Bet", f: r => r.bets.map(b => `${b.side} ${b.status}${b.pnl != null ? " " + usd(b.pnl) : ""}`).join(", ")}], e.largest_errors);
+}
+
+// -- system health -------------------------------------------------------------------
+const statusCls = s => s === "ok" ? "pos" : s === "failing" ? "neg" : "warn";
 async function loadStatus() {
   const s = await get("/api/status");
   const alive = s.loop_alive ? (s.paused ? "paused" : (s.bot_status || "running")) : "not running";
   $("#statusLine").textContent = `Bot: ${alive} · last cycle ${when(s.last_cycle?.at)}`;
+  const m = s.model, db = s.database, e = s.experiment, bad = s.sources.filter(x => x.status !== "ok");
   kpis($("#statusKpis"), [
     ["Bot status", alive, s.loop_alive && !s.paused ? "pos" : "warn"], ["Mode", s.mode, "pos"],
-    ["Last weather update", when(s.last_weather_update)], ["Last Polymarket update", when(s.last_polymarket_update)],
-    ["Last prediction", when(s.last_prediction_time)], ["Last observations", when(s.last_observation_update)],
+    ["Last successful data update", when(s.last_data_update)], ["Last market scan", when(s.last_market_scan)],
+    ["Last prediction", when(s.last_prediction)],
+    ["Data sources", bad.length ? `${bad.length} not ok` : "all ok", bad.some(x => x.status === "failing") ? "neg" : bad.length ? "warn" : "pos",
+     bad.map(x => esc(x.source) + ": " + x.status).join(" · ")],
+    ["Database", db.ok ? "ok" : "error", db.ok ? "pos" : "neg", db.size_mb != null ? `${db.dialect} · ${db.size_mb} MB` : db.dialect],
+    ["Current model", esc(m.production?.version ?? "–"), "", `calibrator: ${esc(m.calibrator.version)}`],
+    ["Last retraining", when(m.last_calibrator_fit), "", "probability calibrators" + (m.last_bias_fit ? ` · station bias ${when(m.last_bias_fit)}` : "")],
+    ["Experiment", esc(e?.name ?? "–"), "", e ? `started ${when(e.started_at)} · code ${esc((e.code_ref || e.git_ref || "unknown").slice(0, 12))}` : ""],
     ["Markets monitored", s.markets_monitored ?? "–"], ["Active paper positions", s.active_positions],
     ["Cycle every", s.cycle_minutes + " min"], ["Last cycle took", s.last_cycle ? s.last_cycle.summary.seconds + " s" : "–"],
   ]);
+  table($("#srcTbl"), [{h: "Source", f: r => esc(r.source)}, {h: "Status", f: r => r.status, c: r => statusCls(r.status)},
+    {h: "Last success", f: r => when(r.last_success)}, {h: "Stale after", n: 1, f: r => r.stale_after_hours + " h"},
+    {h: "Last problem", w: 1, f: r => r.last_problem ? `${when(r.last_problem.ts)} ${esc(r.last_problem.level)}: ${esc(r.last_problem.message)}` : ""}], s.sources);
   const evCols = [{h: "Time", f: r => when(r.ts)}, {h: "Level", f: r => r.level, c: r => r.level === "ERROR" ? "neg" : r.level === "WARNING" ? "warn" : ""}, {h: "Component", f: r => r.component}, {h: "Message", f: r => esc(r.message)}];
   table($("#probTbl"), evCols, s.problems);
   table($("#evTbl"), evCols, s.recent_events);
+  table($("#mdlTbl"), [{h: "Model", f: r => esc(r.version)}, {h: "Role", f: r => r.role}, {h: "Calibration", f: r => esc(r.calibration_version)},
+    {h: "Features", f: r => esc(r.feature_set)}, {h: "Role since", f: r => when(r.role_changed_at)}], [...(m.production ? [m.production] : []), ...m.shadows]);
+  table($("#dbTbl"), [{h: "Table", f: r => esc(r[0])}, {h: "Rows", n: 1, f: r => esc(r[1])}],
+    db.ok ? [...Object.entries(db.rows).map(([k, v]) => [k, v.toLocaleString()]), ["last bankroll snapshot", when(db.last_write)]] : [["error", db.error]]);
   $("#cfg").textContent = JSON.stringify(s.config, null, 2);
 }
 
 async function refresh() {
   for (const f of [loadStatus, loadOverview, loadBets, loadMarkets]) { try { await f(); } catch (e) { console.error(e); } }
-  if ($("#performance").classList.contains("on")) loadPerf().catch(console.error);
+  const open = document.querySelector("section.on")?.id;
+  if (lazy[open]) lazy[open]().catch(console.error);
 }
 refresh(); setInterval(refresh, 30000);
 </script>

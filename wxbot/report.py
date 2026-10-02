@@ -6,6 +6,7 @@ import json
 from sqlalchemy import desc, select
 
 from wxbot.db import Database, markets, paper_bets, system_events
+from wxbot.evaluation.errors import error_analysis
 from wxbot.evaluation.metrics import latest_calibrators, model_comparison, overview, prediction_calibration
 
 
@@ -21,7 +22,7 @@ def build_report(db: Database, initial: float) -> dict:
     ov = overview(db, initial)
     cal = prediction_calibration(db)
     return {"overview": ov, "prediction_calibration": cal, "model_comparison": model_comparison(db),
-            "calibrators": latest_calibrators(db),
+            "calibrators": latest_calibrators(db), "errors": error_analysis(db),
             "verdict": verdict(ov, cal),
             "status": status(db), "bets": all_bets(db)}
 
@@ -161,6 +162,21 @@ def to_markdown(rep: dict) -> str:
                   "|---|---|---:|---:|---:|---:|---:|"]
         lines += [f"| {m['model']} | {m['role']} | {m['n']} | {_num(m['brier'])} | {_num(m['log_loss'])} | "
                   f"{_num(m['production_brier'])} | {_num(m['production_log_loss'])} |" for m in comp["models"]]
+    err = rep.get("errors")
+    if err and err["n"]:
+        lines += ["", "## Recurring weaknesses", "",
+                  f"Where the model was wrong in a consistent way, on {err['n']} resolved markets and "
+                  f"{err['bets']['n']} settled bets: groups with at least {err['min_group']} markets "
+                  f"({err['min_bet_group']} bets) and a gap of at least {err['flag_z']:g} standard errors. "
+                  "The dashboard's Learning tab has every breakdown.", ""]
+        if err["weaknesses"]:
+            lines += ["| Where | Breakdown | Group | n | Weakness | Evidence |", "|---|---|---|---:|---|---|"]
+            lines += [f"| {w['scope']} | {w['dimension']} | {w['group']} | {w['n']} | {w['flag']} | {w['detail']} |"
+                      for w in err["weaknesses"][:12]]
+        else:
+            lines.append("None flagged yet.")
+        counts = ", ".join(f"{c['class']} {c['n']}" for c in err["classes"])
+        lines += ["", f"Error classes: {counts}."]
     days = by_day(rep.get("bets") or [])
     if days:
         lines += ["", "## Results by market day", "",

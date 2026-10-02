@@ -17,7 +17,11 @@ from wxbot.db import (
     EXPORT_TABLES, Database, markets, model_versions, paper_bets, predictions, signals, system_events, utcnow,
 )
 from wxbot.evaluation import metrics
+from wxbot.evaluation.errors import error_analysis
+from wxbot.execution.portfolio import latest_snapshots, open_positions
+from wxbot.experiment import starting_bankroll
 from wxbot.export import export_zip_bytes, table_csv
+from wxbot.health import system_health
 from wxbot.report import build_report, to_markdown
 
 TEMPLATE = Path(__file__).parent / "templates" / "index.html"
@@ -25,7 +29,9 @@ TEMPLATE = Path(__file__).parent / "templates" / "index.html"
 
 def create_app(cfg, db: Database, runner=None, now=utcnow) -> FastAPI:
     app = FastAPI(title="Polymarket weather paper-trading bot", docs_url="/api/docs")
-    initial = cfg.bankroll.initial
+
+    def initial() -> float:  # the database's own starting bankroll (see wxbot/experiment.py)
+        return starting_bankroll(db, cfg)
     password = cfg.app.get("dashboard_password", "") or ""
     basic = HTTPBasic(auto_error=False)
 
@@ -47,7 +53,7 @@ def create_app(cfg, db: Database, runner=None, now=utcnow) -> FastAPI:
 
     @app.get("/api/overview", dependencies=deps)
     def overview():
-        return metrics.overview(db, initial)
+        return metrics.overview(db, initial())
 
     @app.get("/api/markets", dependencies=deps)
     def active_markets():
@@ -56,8 +62,9 @@ def create_app(cfg, db: Database, runner=None, now=utcnow) -> FastAPI:
         latest = (select(s.market_id, func.max(s.id).label("sid")).group_by(s.market_id).subquery())
         rows = db.rows(
             select(mk.id, mk.event_title, mk.event_slug, mk.question, mk.bucket_label, mk.station, mk.local_date,
-                   mk.kind, s.side, s.model_prob, s.market_prob, s.entry_price, s.edge, s.ev_per_dollar,
-                   s.confidence, s.decision, s.reason, s.ts, s.id.label("signal_id"), p.p_yes, p.mu_c, p.sigma_c)
+                   mk.kind, s.side, s.model_prob, s.calibrated_prob, s.market_prob, s.entry_price, s.edge,
+                   s.ev_per_dollar, s.confidence, s.decision, s.reason, s.ts, s.id.label("signal_id"), p.p_yes,
+                   p.calibrated_prob.label("calibrated_p_yes"), p.calibrator_version, p.mu_c, p.sigma_c)
             .join(latest, latest.c.market_id == mk.id).join(signals, s.id == latest.c.sid)
             .join(predictions, p.id == s.prediction_id)
             .where(mk.closed.is_(False), mk.local_date >= today)
@@ -67,6 +74,16 @@ def create_app(cfg, db: Database, runner=None, now=utcnow) -> FastAPI:
                                  or_(mk.local_date >= today, mk.local_date.is_(None)))
                           .group_by(mk.skip_reason))
         criteria = sum(r["n"] for r in skipped if (r["skip_reason"] or "").startswith(CRITERIA_SKIP))
+        # the current quotes (latest snapshot) and any open position in each market
+        snaps = latest_snapshots(db, [r["id"] for r in rows])
+        held = {pos.market_id: pos for pos in open_positions(db)}
+        for r in rows:
+            snap = snaps.get(r["id"]) or {}
+            r.update(yes_bid=snap.get("best_bid"), yes_ask=snap.get("best_ask"), yes_price=snap.get("yes_price"),
+                     liquidity=snap.get("liquidity"), quoted_at=snap.get("ts"))
+            pos = held.get(r["id"])
+            r["position"] = pos and {"bet_id": pos.bet_id, "side": pos.side, "shares": pos.shares,
+                                     "cost": pos.stake, "value": pos.value, "unrealized_pnl": pos.unrealized_pnl}
         return {"markets": rows, "skipped": skipped, "skipped_criteria": criteria}
 
     @app.get("/api/signals/{signal_id}", dependencies=deps)
@@ -80,14 +97,35 @@ def create_app(cfg, db: Database, runner=None, now=utcnow) -> FastAPI:
         return {"signal": sig, "prediction": pred, "market": market, "bet": bet}
 
     @app.get("/api/bets", dependencies=deps)
-    def bets():
+    def bets(q: str = "", status: str = "", side: str = ""):
+        """Every paper bet, newest first. q searches the market, city, station,
+        bucket, date, side and status (case-insensitive); "#12" finds bet 12."""
         b, mk = paper_bets.c, markets.c
-        return db.rows(select(paper_bets, mk.question, mk.event_title, mk.local_date, mk.bucket_label)
-                       .join(markets, mk.id == b.market_id).order_by(desc(b.id)))
+        query = (select(paper_bets, mk.question, mk.event_title, mk.local_date, mk.bucket_label, mk.city, mk.station)
+                 .join(markets, mk.id == b.market_id).order_by(desc(b.id)))
+        if status:
+            query = query.where(b.status == status.upper())
+        if side:
+            query = query.where(b.side == side.upper())
+        for word in q.lower().split():
+            if word.lstrip("#").isdigit() and word.startswith("#"):
+                query = query.where(b.id == int(word[1:]))
+                continue
+            query = query.where(or_(*[func.lower(c).contains(word, autoescape=True) for c in (
+                mk.question, mk.event_title, mk.bucket_label, mk.city, mk.station, mk.local_date, b.side, b.status)]))
+        return db.rows(query)
+
+    @app.get("/api/portfolio", dependencies=deps)
+    def portfolio_view():
+        return metrics.portfolio_view(db, cfg, now(), initial())
+
+    @app.get("/api/errors", dependencies=deps)
+    def errors():
+        return error_analysis(db)
 
     @app.get("/api/performance", dependencies=deps)
     def performance():
-        return metrics.performance_series(db, initial)
+        return metrics.performance_series(db, initial())
 
     @app.get("/api/models", dependencies=deps)
     def models():
@@ -104,7 +142,8 @@ def create_app(cfg, db: Database, runner=None, now=utcnow) -> FastAPI:
                          .order_by(desc(system_events.c.id)).limit(30))
         recent = db.rows(select(system_events).order_by(desc(system_events.c.id)).limit(15))
         return {
-            **state, "mode": cfg.app.mode.upper(), "loop_alive": bool(runner and runner.alive),
+            **state, **system_health(db, cfg, now()), "mode": cfg.app.mode.upper(),
+            "loop_alive": bool(runner and runner.alive),
             "paused": bool(runner and runner.paused), "cycle_minutes": cfg.schedule.cycle_minutes,
             "active_positions": db.one(select(func.count().label("n")).select_from(paper_bets)
                                        .where(paper_bets.c.status == "OPEN"))["n"],
@@ -128,15 +167,15 @@ def create_app(cfg, db: Database, runner=None, now=utcnow) -> FastAPI:
 
     @app.get("/api/report", dependencies=deps)
     def report():
-        return build_report(db, initial)
+        return build_report(db, initial())
 
     @app.get("/export/report.md", response_class=PlainTextResponse, dependencies=deps)
     def report_md():
-        return to_markdown(build_report(db, initial))
+        return to_markdown(build_report(db, initial()))
 
     @app.get("/export/all.zip", dependencies=deps)
     def export_all():
-        data = export_zip_bytes(db, build_report(db, initial))
+        data = export_zip_bytes(db, build_report(db, initial()))
         stamp = utcnow().strftime("%Y%m%d-%H%M")
         return Response(data, media_type="application/zip",
                         headers={"Content-Disposition": f'attachment; filename="wxbot-export-{stamp}.zip"'})

@@ -24,7 +24,9 @@ others, and a failure in one stage is logged and does not stop the rest.
 | Observations | `wxbot/data/weather.py` (`IEMObservations`) | `weather_observations` |
 | Calibration (offline) | `wxbot/backtest.py` | `calibration_params`, `backtest_runs` |
 | Observation history (offline) | `wxbot/history.py` (`python main.py climatology`) | `weather_observations` |
-| Evaluation | `wxbot/evaluation/metrics.py` (incl. `model_comparison`), `wxbot/report.py` | REPORT.md, dashboard |
+| Evaluation | `wxbot/evaluation/metrics.py` (incl. `model_comparison`, `daily_scores`, `portfolio_view`), `wxbot/report.py` | REPORT.md, dashboard |
+| Error analysis | `wxbot/evaluation/errors.py` (`error_analysis`: error classes, breakdowns, flagged weaknesses) | dashboard Learning tab, REPORT.md |
+| System health | `wxbot/health.py` (data sources, database, model and calibrator, last refits) | dashboard System health tab |
 
 Every bet can be traced back: `paper_bets.signal_id` → `signals.prediction_id`
 → `predictions.forecast_snapshot_id` → the forecast values and request used.
