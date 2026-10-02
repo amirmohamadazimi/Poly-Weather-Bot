@@ -74,6 +74,7 @@ jobs:
           [ -n "$STATIONS" ] && args+=(--stations "$STATIONS")
           python main.py "${args[@]}" > out/BACKTEST.md
           cat out/BACKTEST.md >> "$GITHUB_STEP_SUMMARY"
+          cat out/BACKTEST.md   # also in the job log
 
       - name: Compress the backtest database
         if: always()
