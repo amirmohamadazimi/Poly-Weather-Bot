@@ -1,6 +1,14 @@
-.venv
+# Never bake secrets or local state into the image.
+.env
+.env.*
+!.env.example
 data
 exports
+*.sqlite3*
 .git
+.venv
 __pycache__
+*.pyc
 .pytest_cache
+.ruff_cache
+.mypy_cache

@@ -34,8 +34,8 @@ Legend: **Have** = exists and is tested · **Partial** = exists but is missing w
 | 17 | 30-day $100 experiment | Partial | A $1,000 version is running on GitHub Actions; REPORT.md | The $100 run itself; report sections on log loss, segments, over- and under-confidence, largest errors, model versions and edge concentration |
 | 18 | Dashboard | Have | Overview (starting bankroll, equity, P/L, ROI, positions); live markets with current bid/ask, raw and calibrated probability, edge, EV and position; portfolio with mark value, payout, max loss and every risk limit's use; searchable bet history; charts of bankroll, P/L, drawdown, calibration (raw and calibrated), Brier, log loss, accuracy and model vs market; a Learning tab; system health with data-source status, database, model, calibrator and last refits (v2 M7) | No gap |
 | 19 | Notifications | Missing | None | An optional notifier interface (log/webhook/email) for the listed events |
-| 20 | Server deployment | Partial | Docker, compose, systemd unit, env config; the actual runs are on GitHub Actions | A documented VPS deploy that pulls a tagged release |
-| 21 | CI | Partial | pytest on PRs and main | Lint (ruff), type check (mypy on core), Docker build, staging vs production split |
+| 20 | Server deployment | Partial | Docker image that runs unprivileged, forces paper mode, keeps `.env` out, does the first-start setup and caps its logs; compose, systemd unit, env config; the actual runs are on GitHub Actions | A documented VPS deploy that pulls a tagged release |
+| 21 | CI | Partial | pytest on PRs and main; a Docker job that builds and starts the image and checks paper mode, the user and that live mode is refused | Lint (ruff), type check (mypy on core), staging vs production split |
 | 22 | Observability | Partial | JSON logs; a system_events table with an event `code` (v2 M9: MODEL_RETRAINED, MODEL_DEPLOYED, MODEL_ROLLBACK, SIGNIFICANT_MODEL_ERROR, PAPER_BET_OPENED) | Codes on the remaining events (DATA_UPDATE, MARKET_DISCOVERED, MARKET_RESOLVED, PAPER_BET_SETTLED, …) |
 | 23 | Failure handling | Partial | Timeouts; retries with backoff incl. 429; stale-forecast and model-count rules; /healthz | Response caching; a validation stage that blocks bets on corrupt data |
 | 24 | Testing | Partial | 53 tests covering parsing, model, rules, sizing, full cycle, settlement, duplicates, safety, backtest leakage | Calibration, data validation, API-failure, DB-operation and end-to-end resolution tests for the new parts |
@@ -56,8 +56,8 @@ Legend: **Have** = exists and is tested · **Partial** = exists but is missing w
 | 7 | Dashboard | Have | Done on `v2-m7-dashboard`: live prices and calibrated probability, portfolio and risk limits, bet search, Brier/log-loss/accuracy charts, Learning tab, system health |
 | 8 | Historical backtesting | Have | Done on `v2-m8-backtest`: `backtest-markets` and the manual `backtest` workflow; report BACKTEST.md |
 | 9 | Error analysis and learning | Have | Done on `v2-m9-learning`: learning ledger with error classes, versioned bias/spread sets, weekly retrain with out-of-sample approval, automatic and manual rollback |
-| 10 | Docker | Have | Compose service for the dashboard plus worker; small fixes only |
-| 11 | CI and tests | Partial | ruff, mypy, Docker build, coverage of new parts |
+| 10 | Docker | Have | Non-root image forced to paper mode, first-start setup, log caps, and a CI job that starts it |
+| 11 | CI and tests | Partial | ruff, mypy, coverage of new parts (the Docker build check came with M10) |
 | 12 | Server deployment | Partial | VPS guide plus tagged-release deploy; the Actions runner stays the default since there's no server |
 | 13 | 30-day experiment | Partial | `paper-trading-100.yml` runs the $100 experiment from main (state on `paper-data-100`); running since 2026-10-01 21:48 UTC |
 | 14 | Research report | Partial | Full end-of-experiment report from section 17 |

@@ -454,11 +454,28 @@ of the 2,000 free minutes a month.
 ```bash
 cp .env.example .env        # set a dashboard password
 docker compose up -d --build
+docker compose logs -f      # watch the first start
 ```
 
-`restart: unless-stopped` brings it back after crashes and reboots, and the
-database lives in `./data`. Without Docker, `deploy/wxbot.service` is a systemd
-unit. Set `WXBOT_APP__LOG_JSON=true` for one-JSON-object-per-line logs. To use
+The first start takes roughly 10 to 15 minutes before the dashboard answers:
+like the Actions runs, it loads three years of observed highs and lows for the
+climatology baseline and fits the station bias/spread on 90 days of past
+forecasts. Later starts skip both (`--if-missing`). If the weather archives
+are unreachable it starts at once on the default spreads and tries again at the
+next start; `WXBOT_BOOTSTRAP=false` skips this setup.
+
+* **Paper only.** Compose and the image both set `WXBOT_APP__MODE=paper`, which
+  wins over `.env`; `.env` and the database are never copied into the image.
+* **Unprivileged.** The bot runs as user `wxbot` (uid 1000) and can write only
+  `./data`, which holds the database and survives rebuilds.
+* **Unattended.** `restart: unless-stopped` brings it back after crashes and
+  reboots, the health check calls `/healthz`, and the logs are capped at five
+  10 MB files.
+* `docker compose run --rm wxbot report` prints the report, and any other
+  command (`retrain`, `rollback`, `export`) works the same way.
+
+Without Docker, `deploy/wxbot.service` is a systemd unit. Set
+`WXBOT_APP__LOG_JSON=true` for one-JSON-object-per-line logs. To use
 PostgreSQL, install `psycopg[binary]` and set `WXBOT_APP__DATABASE_URL`.
 
 ## Safety boundary
