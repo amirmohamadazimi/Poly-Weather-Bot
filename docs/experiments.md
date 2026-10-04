@@ -22,6 +22,12 @@
   records its commit, every change of code version is logged in
   `system_events`, and the report shows the commit it started on and the one
   running now.
+* Learning (from v2 M9): once a week the cycle retrains the station bias and
+  spread and deploys a new set only if it beats the one in use on markets it
+  was not fitted on; a deployed set that then does worse is rolled back. Every
+  prediction records the set that priced it, and REPORT.md lists every set, so
+  results can be split by model version. `WXBOT_LEARNING__ENABLED=false` keeps
+  the model fixed instead.
 * Its first run loads three years of observation history
   (`python main.py climatology --if-missing`; retried on later runs if it
   fails) so the climatology baseline is scored from day one, and fits the

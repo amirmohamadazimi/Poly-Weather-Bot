@@ -9,8 +9,11 @@ high/low (METAR archive). It then:
    issued (<= D - L - 1). Every whole-degree bucket is priced like a market
    bucket and scored against what happened: Brier, log loss, calibration, and
    the hit rate of >= 80% calls.
-2. Fits bias/sigma on the full window and stores them in calibration_params,
-   which the live model uses from then on.
+2. Fits bias/sigma on the full window and stores them as a param set
+   (wxbot/learning/params.py). The first set of a database becomes production
+   (there is nothing to compare it with yet); once one exists, a new fit is
+   stored as a candidate and never used: `retrain` fits, judges and deploys
+   sets out of sample.
 
 Historical Polymarket prices are not replayed in v1, so this measures
 forecast skill and calibration, not trading P/L; the paper-trading run
@@ -25,8 +28,10 @@ from datetime import date, timedelta
 
 from wxbot.data.polymarket import Bucket
 from wxbot.data.stations import STATIONS, Station
-from wxbot.db import Database, backtest_runs, calibration_params, utcnow
+from wxbot.db import Database, backtest_runs, utcnow
 from wxbot.evaluation.metrics import brier, calibration_bins
+from wxbot.learning import params as param_sets
+from wxbot.learning.params import fit
 from wxbot.model.normal import NormalMultiModel, c_to_unit
 
 log = logging.getLogger("wxbot.backtest")
@@ -35,12 +40,6 @@ MIN_TRAIN = 14
 
 def unit_for(station: Station) -> str:
     return "F" if station.code.startswith("K") else "C"
-
-
-def fit(errors: list[float]) -> tuple[float, float]:
-    bias = statistics.fmean(errors)
-    sigma = statistics.pstdev(errors) if len(errors) > 1 else 0.0
-    return bias, sigma
 
 
 def walk_forward_fits(rows: list, errors: list[float], lead: int):
@@ -81,7 +80,7 @@ def run_backtest(cfg, db: Database, forecaster, observer, stations: list[str] | 
                        params={"stations": codes, "days": days, "leads": list(leads), "start": start.isoformat(),
                                "end": end.isoformat(), "models": list(forecaster.models)})
     pairs_all: list[tuple[float, int]] = []
-    per_station, fitted = {}, 0
+    per_station, fitted = {}, []
     for code in codes:
         st = STATIONS[code]
         try:
@@ -110,10 +109,9 @@ def run_backtest(cfg, db: Database, forecaster, observer, stations: list[str] | 
                 key = f"{kind}_lead{lead}"
                 if len(errors) >= cfg.model.min_calibration_samples:
                     bias, sigma = fit(errors)
-                    db.insert(calibration_params, fitted_at=utcnow(), station=code, kind=kind, lead_days=lead,
-                              bias_c=bias, sigma_c=sigma, n=len(errors), window_start=start.isoformat(),
-                              window_end=end.isoformat(), backtest_run_id=run_id)
-                    fitted += 1
+                    fitted.append({"station": code, "kind": kind, "lead_days": lead, "bias_c": bias,
+                                   "sigma_c": sigma, "n": len(errors), "window_start": start.isoformat(),
+                                   "window_end": end.isoformat()})
                     stats[key] = {"n": len(errors), "bias_c": round(bias, 3), "sigma_c": round(sigma, 3),
                                   "walk_forward_mae_c": round(statistics.fmean(abs_err), 3) if abs_err else None,
                                   "brier": brier(*zip(*pairs)) if pairs else None}
@@ -121,8 +119,21 @@ def run_backtest(cfg, db: Database, forecaster, observer, stations: list[str] | 
                     stats[key] = {"n": len(errors), "note": "too few days to fit"}
         per_station[code] = stats
     report = summarize(pairs_all)
-    report.update({"stations": per_station, "calibration_rows_fitted": fitted, "run_id": run_id,
+    report.update({"stations": per_station, "calibration_rows_fitted": len(fitted), "run_id": run_id,
                    "note": "Forecast skill only; no historical market prices replayed."})
+    if fitted:
+        now = utcnow()
+        first = param_sets.production(db) is None
+        version = f"bias-sigma-{now:%Y%m%d}-backtest-run{run_id}"
+        set_id = param_sets.store(
+            db, version=version, model_version=cfg.model.version, origin="backtest", rows=fitted, now=now,
+            status="candidate", backtest_run_id=run_id, train_from=start.isoformat(), train_to=end.isoformat(),
+            train_days=days, n_carried=0, approved=first,
+            reason="first fit: nothing to compare it with" if first else
+            "fitted by `backtest` while a production set exists: not used (`retrain` judges new sets)")
+        if first:
+            param_sets.deploy(db, set_id, now)
+        report["param_set"] = {"version": version, "production": first}
     from sqlalchemy import update
     with db.engine.begin() as conn:
         conn.execute(update(backtest_runs).where(backtest_runs.c.id == run_id)

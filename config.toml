@@ -96,6 +96,26 @@ min_confidence = 0.95
 isotonic_min_block = 20
 refit_hours = 24
 
+[learning]
+# Retraining of the production model's station bias and error spread
+# (wxbot/learning/, README "How the learning system works"). Every retrain_days
+# candidates are fitted on each train_days window of past forecasts and
+# observations and judged on the markets of the newest holdout_days days, which
+# none of them was fitted on. A candidate replaces production only if, on at
+# least min_markets of those markets, its Brier score and log loss are both
+# lower and the gain holds in min_confidence of bootstrap resamples of whole
+# stations. The replaced set is kept, and put back automatically if the new one
+# then does reliably worse on the markets it priced. false turns all of this off
+# (the learning ledger is still written).
+enabled = true
+retrain_days = 7
+holdout_days = 7
+train_days = [30, 60, 90]
+min_markets = 200
+min_confidence = 0.95
+bootstrap = 2000
+retry_hours = 24            # after a retraining whose data could not be fetched
+
 [backtest]
 # Historical market backtest (python main.py backtest-markets): research only.
 # It keeps its own database, so replayed markets never mix with a paper-trading

@@ -1,7 +1,7 @@
 """The paper-trading cycle:
 
 collect markets -> collect forecasts -> predict -> signal -> paper bet
--> check resolutions -> settle -> snapshot bankroll.
+-> check resolutions -> settle -> learn (wxbot/learning/) -> snapshot bankroll.
 
 Each step is isolated: a failure is logged to system_events and the rest of
 the cycle still runs.
@@ -22,15 +22,16 @@ from wxbot.data.polymarket import Bucket, ParsedMarket, parse_time, price_change
 from wxbot.data.stations import get_station
 from wxbot.data.validation import validate_forecast, validate_observation
 from wxbot.db import (
-    Database, calibration_params, forecast_snapshots, forecast_values, market_criteria_history, market_price_history,
+    Database, forecast_snapshots, forecast_values, market_criteria_history, market_price_history,
     market_snapshots, markets, paper_bets, predictions, signals, utcnow, weather_observations,
 )
 from wxbot.execution import portfolio
 from wxbot.execution.paper import BrokerRefused
 from wxbot.experiment import ensure_experiment
 from wxbot.features import FEATURE_SET, build_features, climatology_window, observed_history
+from wxbot.learning import learn, outcomes, retrain
+from wxbot.learning import params as param_sets
 from wxbot.model.base import Calibration
-from wxbot.model.normal import default_calibration
 from wxbot.model.registry import sync_registry
 from wxbot.strategy import rules
 
@@ -66,7 +67,7 @@ CLOB_DOWN = (requests.ConnectionError, requests.Timeout, requests.exceptions.Ret
 
 class Engine:
     def __init__(self, cfg, db: Database, polymarket, forecaster, observer, predictor, broker, sizer,
-                 clock=utcnow, shadows=()):
+                 clock=utcnow, shadows=(), history=None):
         self.cfg = cfg
         self.db = db
         self.pm = polymarket
@@ -76,6 +77,7 @@ class Engine:
         self.shadows = list(shadows)  # priced and stored on every market, never traded
         self.broker = broker
         self.sizer = sizer
+        self.history = history    # past forecasts (Open-Meteo Previous Runs) for retraining; None = no retraining
         self.clock = clock
         v = cfg.get("validation")
         self.validation = SimpleNamespace(**(v.as_dict() if v else {}), min_models=cfg.weather.min_models)
@@ -95,6 +97,7 @@ class Engine:
             ("signals", self.predict_and_trade),
             ("settlement", self.settle),
             ("observations", self.maybe_collect_observations),
+            ("learning", self.learn),
         ]
         for name, fn in steps:
             try:
@@ -216,14 +219,12 @@ class Engine:
         return self.db.one(select(forecast_snapshots).where(
             fs.station == station, fs.local_date == local_date, fs.kind == kind).order_by(desc(fs.id)).limit(1))
 
+    def _params(self) -> param_sets.Params:
+        """The production station bias/spread param set (wxbot/learning/params.py)."""
+        return param_sets.load(self.db, self.cfg, param_sets.production(self.db))
+
     def _calibration(self, station: str, kind: str, lead_days: int) -> Calibration:
-        cp = calibration_params.c
-        row = self.db.one(select(calibration_params).where(
-            cp.station == station, cp.kind == kind, cp.lead_days == max(lead_days, 1),
-        ).order_by(desc(cp.id)).limit(1))
-        if row and row["n"] >= self.cfg.model.min_calibration_samples:
-            return Calibration(bias_c=row["bias_c"], sigma_c=row["sigma_c"], n=row["n"], source="backtest")
-        return default_calibration(list(self.cfg.model.default_sigma_c), lead_days)
+        return self._params().calibration(station, kind, lead_days)
 
     # -- 3. probability calibration ---------------------------------------
     def maybe_fit_calibration(self, force: bool = False) -> dict:
@@ -234,7 +235,7 @@ class Engine:
         hours = float(self.cfg.calibration.refit_hours)
         if not force and last and now - datetime.fromisoformat(last) < timedelta(hours=hours):
             return {"skipped": True}
-        rows = fit_round(self.db, self.cfg, self.predictor.version, now)
+        rows = fit_round(self.db, self.cfg, self.predictor.version, now, param_sets.production(self.db))
         self.db.set_state("last_calibration_fit", now.isoformat())
         chosen = next((r["version"] for r in rows if r["selected"]), "identity")
         self.db.log_event("INFO", "calibration", f"fit on {rows[0]['n'] if rows else 0} resolved markets: "
@@ -247,7 +248,8 @@ class Engine:
     def predict_and_trade(self) -> dict:
         now = self.clock()
         n_pred = n_shadow = n_bets = 0
-        calibrator = active_calibrator(self.db, self.cfg, self.predictor.version, now)
+        params = self._params()
+        calibrator = active_calibrator(self.db, self.cfg, self.predictor.version, now, params.ps)
         history: dict[tuple, dict] = {}     # observed values per (station, kind), read once per cycle
         features: dict[tuple, object] = {}  # per (station, day, kind, forecast)
         shadow_errors: dict[str, str] = {}
@@ -257,7 +259,7 @@ class Engine:
             if fc is None:
                 continue
             lead_days = (date.fromisoformat(m["local_date"]) - local_today(st.tz, now)).days
-            calib = self._calibration(m["station"], m["kind"], lead_days)
+            calib = params.calibration(m["station"], m["kind"], lead_days)
             bucket = Bucket(m["bucket_lo"], m["bucket_hi"], m["unit"])
             quality = fc.get("quality") or {"ok": True, "rejected": {}}
             values = {k: v for k, v in fc["values_c"].items() if k not in quality.get("rejected", {})}
@@ -278,7 +280,7 @@ class Engine:
                                      model_version=pred.model_version, lead_days=lead_days, mu_c=pred.mu_c,
                                      sigma_c=pred.sigma_c, p_yes=pred.p_yes, inputs=pred.inputs,
                                      role="production", feature_set=FEATURE_SET, calibrated_prob=cal_p,
-                                     calibrator_version=calibrator.version)
+                                     calibrator_version=calibrator.version, params_version=params.version)
             n_pred += 1
             n_shadow += self._shadow_predictions(m, fc, bucket, values, lead_days, calib, feats, pred_id, now,
                                                  shadow_errors)
@@ -405,7 +407,7 @@ class Engine:
                 return False
             self.db.log_event("INFO", "paper_bet", f"bet #{bet_id}: {side} '{m['question']}' "
                               f"${fill.total:.2f} @ {fill.avg_price:.3f} (model {raw_prob:.2f}, "
-                              f"calibrated {model_prob:.2f})")
+                              f"calibrated {model_prob:.2f})", code="PAPER_BET_OPENED")
             return True
         return False
 
@@ -561,3 +563,16 @@ class Engine:
                                    n_reports=n, source=self.observer.source, fetched_at=self.clock())
                     stored += 1
         return stored
+
+    # -- 7. learning ---------------------------------------------------------
+    def learn(self) -> dict:
+        """Record newly resolved markets in the learning ledger, roll back a
+        deployed param set that does worse than the one before it, and retrain
+        when due (wxbot/learning/)."""
+        return learn(self.db, self.cfg, self.history, self.observer, self.clock())
+
+    def retrain(self) -> dict:
+        """Retrain now, whether due or not (python main.py retrain)."""
+        recorded = outcomes.record(self.db, self.clock())
+        return {"outcomes": recorded, **retrain.retrain(self.db, self.cfg, self.history, self.observer,
+                                                          self.clock(), force=True)}

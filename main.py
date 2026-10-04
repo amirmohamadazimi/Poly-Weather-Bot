@@ -10,6 +10,9 @@
                                  # replay closed markets at historical prices (own database;
                                  #   --start/--end or --days; --offline: stored data only)
     python main.py calibrate     # refit the probability calibrators now (the cycle does it daily)
+    python main.py retrain       # retrain the station bias/spread now and deploy only if it is
+                                 #   better out of sample (the cycle does it weekly)
+    python main.py rollback      # put the previous station bias/spread set back into production
     python main.py climatology   # load --years of observed highs/lows for the climatology baseline
                                  #   (--if-missing: only when no history was loaded yet)
     python main.py report        # print the performance report
@@ -42,7 +45,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("command", nargs="?", default="run",
                         choices=["run", "once", "worker", "web", "backtest", "backtest-markets", "calibrate",
-                                 "climatology", "report", "export"])
+                                 "retrain", "rollback", "climatology", "report", "export"])
     parser.add_argument("path", nargs="?",
                         help="export: output directory; backtest-markets: also write the report as JSON here")
     parser.add_argument("--config", help="path to config.toml")
@@ -95,6 +98,13 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({k: v for k, v in rep.items() if k != "stations"}, indent=2, default=str))
         return 0
 
+    if args.command == "rollback":
+        from wxbot.db import utcnow
+        from wxbot.learning.retrain import manual_rollback
+        out = manual_rollback(db, utcnow())
+        print(json.dumps(out, indent=2))
+        return 1 if "error" in out else 0
+
     if args.command == "web":  # read-only: no engine, so nothing is written to the database
         from wxbot.web.app import create_app
         serve(cfg, create_app(cfg, db))
@@ -106,6 +116,9 @@ def main(argv: list[str] | None = None) -> int:
         from wxbot.evaluation.metrics import latest_calibrators
         print(json.dumps({"summary": engine.maybe_fit_calibration(force=True), "fits": latest_calibrators(db)},
                          indent=2, default=str))
+        return 0
+    if args.command == "retrain":
+        print(json.dumps(engine.retrain(), indent=2, default=str))
         return 0
     if args.command == "climatology":
         from wxbot.history import load_history

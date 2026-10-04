@@ -22,12 +22,14 @@ others, and a failure in one stage is logged and does not stop the rest.
 | Resolution and settlement | `Engine.settle` | `market_resolutions`, `paper_bets`, `markets.closed_time` |
 | Price history (after resolution) | `Engine._store_price_histories`, `PolymarketClient.get_price_history` | `market_price_history` |
 | Observations | `wxbot/data/weather.py` (`IEMObservations`) | `weather_observations` |
-| Calibration (offline) | `wxbot/backtest.py` | `calibration_params`, `backtest_runs` |
+| Learning ledger | `wxbot/learning/outcomes.py` (`record`, each cycle after settlement) | `prediction_outcomes`, `system_events` (SIGNIFICANT_MODEL_ERROR) |
+| Retraining and rollback | `wxbot/learning/retrain.py` (`retrain` when due, `check_rollback` each cycle), `wxbot/learning/params.py` (versioned sets; the engine prices with the production set) | `param_sets`, `calibration_params`, `predictions.params_version`, `system_events` (MODEL_RETRAINED, MODEL_DEPLOYED, MODEL_ROLLBACK) |
+| Calibration (offline) | `wxbot/backtest.py` (the first param set) | `calibration_params`, `param_sets`, `backtest_runs` |
 | Observation history (offline) | `wxbot/history.py` (`python main.py climatology`) | `weather_observations` |
 | Market backtest (offline, own database) | `wxbot/backtesting/` (`collect`, `replay` with no look-ahead, `evaluate`, `report`; `python main.py backtest-markets`) | `historical_forecasts`, `backtest_predictions`, `backtest_runs`, plus closed `markets`, `market_resolutions`, `market_price_history`, `weather_observations` |
 | Evaluation | `wxbot/evaluation/metrics.py` (incl. `model_comparison`, `daily_scores`, `portfolio_view`), `wxbot/report.py` | REPORT.md, dashboard |
 | Error analysis | `wxbot/evaluation/errors.py` (`error_analysis`: error classes, breakdowns, flagged weaknesses) | dashboard Learning tab, REPORT.md |
-| System health | `wxbot/health.py` (data sources, database, model and calibrator, last refits) | dashboard System health tab |
+| System health | `wxbot/health.py` (data sources, database, model, param set and calibrator, last retraining and refits) | dashboard System health tab |
 
 Every bet can be traced back: `paper_bets.signal_id` → `signals.prediction_id`
 → `predictions.forecast_snapshot_id` → the forecast values and request used.

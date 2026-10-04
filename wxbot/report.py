@@ -8,6 +8,7 @@ from sqlalchemy import desc, select
 from wxbot.db import Database, markets, paper_bets, system_events
 from wxbot.evaluation.errors import error_analysis
 from wxbot.evaluation.metrics import latest_calibrators, model_comparison, overview, prediction_calibration
+from wxbot.learning import summary as learning_summary
 
 
 def _pct(x) -> str:
@@ -23,6 +24,7 @@ def build_report(db: Database, initial: float) -> dict:
     cal = prediction_calibration(db)
     return {"overview": ov, "prediction_calibration": cal, "model_comparison": model_comparison(db),
             "calibrators": latest_calibrators(db), "errors": error_analysis(db),
+            "model_updates": learning_summary(db, limit=10),
             "verdict": verdict(ov, cal),
             "status": status(db), "bets": all_bets(db)}
 
@@ -81,6 +83,30 @@ def verdict(ov: dict, cal: dict) -> list[str]:
         notes.append(f"Across {cal['n_market']} resolved markets the model's Brier score {_num(cal['brier_model'])} "
                      f"was {'better' if better else 'worse'} than the market's {_num(cal['brier_market'])}.")
     return notes
+
+
+def model_updates(mu: dict | None) -> list[str]:
+    """The station bias/spread param sets: which is in use, and every retraining
+    and rollback (wxbot/learning/)."""
+    if not mu or not mu["sets"]:
+        return []
+    prod = mu["production"]
+    out = ["", "## Model updates", "",
+           (f"Station bias and error spread in use: **{prod['version']}** ({prod['origin']}, fitted on "
+            f"{prod['train_from']} to {prod['train_to']}, in production since {str(prod['deployed_at'])[:16]})."
+            if prod else "Station bias and error spread in use: the default spreads (no parameter set yet)."),
+           "A retrained set replaces it only if it scores better on markets none of the candidates was fitted on; "
+           "the replaced set is kept and put back if the new one then does reliably worse.", "",
+           "| Set | Status | Trained on | Out-of-sample markets | Brier production → set | "
+           "Log loss production → set | Decision |", "|---|---|---|---:|---|---|---|"]
+    for s in mu["sets"]:
+        ev = s["evaluation"] or {}
+        trained = f"{s['train_from']} to {s['train_to']}" if s["train_from"] else "–"
+        scores = (f"{_num(ev['brier_old'])} → {_num(ev['brier_new'])} | "
+                  f"{_num(ev['log_loss_old'])} → {_num(ev['log_loss_new'])}") if ev.get("n") else "– | –"
+        out.append(f"| {s['version']} | {s['status']} | {trained} | {ev.get('n', '–')} | {scores} | "
+                   f"{s['reason'] or ''} |")
+    return out
 
 
 def to_markdown(rep: dict) -> str:
@@ -151,6 +177,7 @@ def to_markdown(rep: dict) -> str:
                   f"{_num(c['log_loss_before'])} → {_num(c['log_loss_after'])} | "
                   f"{'yes' if c['approved'] else 'no: ' + (c['reason'] or '')} | {'yes' if c['selected'] else ''} |"
                   for c in cals]
+    lines += model_updates(rep.get("model_updates"))
     comp = rep.get("model_comparison")
     if comp:
         lines += ["", "## Model comparison", "",

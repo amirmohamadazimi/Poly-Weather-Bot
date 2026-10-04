@@ -33,6 +33,7 @@ system_events = Table(
     Column("component", String(40), nullable=False),
     Column("message", Text, nullable=False),
     Column("details", JSON),
+    Column("code", String(40), index=True),           # event code, e.g. MODEL_DEPLOYED (v2 M9)
 )
 
 bot_state = Table(  # small key/value store: last update times, loop status
@@ -172,6 +173,7 @@ predictions = Table(
     Column("feature_set", String(20)),                # see wxbot/features.py
     Column("calibrated_prob", Float),                 # p_yes after the active calibrator (production only)
     Column("calibrator_version", String(60)),         # prob_calibrators.version, or "identity"
+    Column("params_version", String(60)),             # param_sets.version priced with (production only, v2 M9)
 )
 
 prob_calibrators = Table(  # every probability-calibrator fit; the newest round's selected one is active
@@ -197,6 +199,7 @@ prob_calibrators = Table(  # every probability-calibrator fit; the newest round'
     Column("approved", Boolean, nullable=False),
     Column("selected", Boolean, nullable=False),       # the one used until the next fit round
     Column("reason", Text),
+    Column("params_version", String(60)),              # fitted on (and applied to) this param set only (v2 M9)
 )
 
 model_versions = Table(  # model registry: every model version the bot has run, and its current role
@@ -308,6 +311,81 @@ calibration_params = Table(
     Column("window_start", String(10)),
     Column("window_end", String(10)),
     Column("backtest_run_id", Integer),
+    Column("param_set_id", Integer, index=True),       # param_sets.id (v2 M9)
+)
+
+param_sets = Table(  # every fit of the station bias/spread parameters; one is production (v2 M9, wxbot/learning/)
+    "param_sets", metadata,
+    Column("id", Integer, primary_key=True),
+    Column("version", String(60), nullable=False, unique=True),
+    Column("model_version", String(40)),
+    _ts("created_at"),
+    Column("origin", String(12)),                     # backtest | retrain | legacy (fitted before v2 M9)
+    Column("status", String(12), nullable=False, index=True),
+    # production | previous (kept for a rollback) | retired | rolled_back | rejected | candidate
+    Column("train_from", String(10)),                 # market days of forecasts and observations fitted
+    Column("train_to", String(10)),
+    Column("train_days", Integer),
+    Column("n_rows", Integer),                        # station/kind/lead rows fitted
+    Column("n_carried", Integer),                     # rows kept from production (too few days or no data)
+    Column("evaluation", JSON),                       # out-of-sample comparison with production
+    Column("approved", Boolean),
+    Column("reason", Text),
+    Column("deployed_at", DateTime(timezone=True)),   # last time it became production
+    Column("retired_at", DateTime(timezone=True)),    # last time it left production
+    Column("replaces", String(60)),                   # the production version it replaced
+    Column("legacy", Boolean, nullable=False, default=False),  # predictions without params_version belong to it
+)
+
+prediction_outcomes = Table(  # the learning ledger: every resolved market's decision prediction (v2 M9)
+    "prediction_outcomes", metadata,
+    Column("id", Integer, primary_key=True),
+    Column("market_id", String(40), ForeignKey("markets.id"), unique=True),
+    Column("prediction_id", Integer, ForeignKey("predictions.id")),
+    Column("signal_id", Integer),
+    Column("bet_id", Integer),
+    _ts("recorded_at"),
+    Column("resolved_at", DateTime(timezone=True)),
+    Column("decision_time", DateTime(timezone=True)),  # when the prediction was made
+    Column("model_version", String(40), index=True),
+    Column("params_version", String(60), index=True),
+    Column("calibrator_version", String(60)),
+    Column("feature_set", String(20)),
+    Column("event_id", String(40)),
+    Column("station", String(10), index=True),
+    Column("city", String(60)),
+    Column("kind", String(4)),
+    Column("local_date", String(10), index=True),
+    Column("lead_days", Integer),
+    Column("unit", String(1)),
+    Column("bucket_lo", Float),
+    Column("bucket_hi", Float),
+    Column("forecast_snapshot_id", Integer),
+    Column("forecast_source", String(40)),
+    Column("n_models", Integer),
+    Column("model_spread_c", Float),
+    Column("mu_c", Float),
+    Column("sigma_c", Float),
+    Column("distance_sigma", Float),                   # forecast mean's distance from the bucket, in sigmas
+    Column("p_yes", Float, nullable=False),            # the model's probability
+    Column("p_used", Float),                           # what the rules used (calibrated)
+    Column("market_yes", Float),                       # market's mid-implied YES probability then
+    Column("liquidity", Float),
+    Column("outcome", String(3), nullable=False),
+    Column("y", Integer, nullable=False),              # 1 = YES
+    Column("error_class", String(30), index=True),     # wxbot/evaluation/errors.py classify(p_yes, y)
+    Column("brier", Float),
+    Column("log_loss", Float),
+    Column("market_brier", Float),
+    Column("decision", String(10)),                    # the signal: BET | NO_BET
+    Column("side", String(3)),
+    Column("entry_price", Float),
+    Column("reason", Text),
+    Column("bet_side", String(3)),                     # the paper bet on this market, if any
+    Column("bet_status", String(8)),
+    Column("bet_stake", Float),
+    Column("bet_pnl", Float),
+    Column("inputs", JSON),                            # model values, calibration, features, data quality
 )
 
 backtest_runs = Table(
@@ -363,7 +441,8 @@ EXPORT_TABLES = [
     "paper_bets", "signals", "predictions", "forecast_snapshots", "forecast_values", "markets",
     "market_snapshots", "market_price_history", "market_criteria_history", "market_resolutions", "bankroll_snapshots",
     "weather_observations", "calibration_params", "backtest_runs", "model_versions", "prob_calibrators",
-    "experiments", "system_events", "historical_forecasts", "backtest_predictions",
+    "experiments", "system_events", "historical_forecasts", "backtest_predictions", "param_sets",
+    "prediction_outcomes",
 ]
 
 
@@ -411,6 +490,7 @@ class Database:
         row = self.one(select(bot_state.c.value).where(bot_state.c.key == key))
         return default if row is None else row["value"]
 
-    def log_event(self, level: str, component: str, message: str, details: dict | None = None) -> None:
+    def log_event(self, level: str, component: str, message: str, details: dict | None = None,
+                  code: str | None = None) -> None:
         self.insert(system_events, ts=utcnow(), level=level, component=component,
-                    message=message[:2000], details=details)
+                    message=message[:2000], details=details, code=code)
