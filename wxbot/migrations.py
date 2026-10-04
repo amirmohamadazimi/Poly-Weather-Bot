@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import logging
 
-from sqlalchemy import JSON, DateTime, Engine, Float, Integer, String, inspect, text
+from sqlalchemy import JSON, DateTime, Engine, Float, Integer, String, func, inspect, select, text, update
+from sqlalchemy.exc import IntegrityError
 
 log = logging.getLogger("wxbot.migrations")
 
@@ -32,6 +33,10 @@ ADDED_COLUMNS = [
     ("paper_bets", "market_snapshot", JSON()),                       # v2 M6
     ("bankroll_snapshots", "market_value", Float()),                 # v2 M6
     ("bankroll_snapshots", "unrealized_pnl", Float()),               # v2 M6
+    ("system_events", "code", String(40)),                           # v2 M9
+    ("predictions", "params_version", String(60)),                   # v2 M9
+    ("prob_calibrators", "params_version", String(60)),              # v2 M9
+    ("calibration_params", "param_set_id", Integer()),               # v2 M9
 ]
 
 
@@ -50,4 +55,33 @@ def migrate(engine: Engine) -> list[str]:
             conn.execute(text(f'ALTER TABLE {table} ADD COLUMN {column} {ddl}'))
             added.append(f"{table}.{column}")
             log.info("migration: added column %s.%s", table, column)
+    adopt_legacy_params(engine)
     return added
+
+
+def adopt_legacy_params(engine: Engine) -> str | None:
+    """A database from before v2 M9 has station bias/spread rows but no param
+    set. They become the first production set, marked legacy: predictions and
+    calibrators stored before M9 (no params_version) belong to it. Runs only
+    while no param set exists, so it never touches a database already on M9."""
+    from wxbot.db import calibration_params, param_sets   # wxbot.db imports this module when it opens a database
+    cp = calibration_params.c
+    try:
+        with engine.begin() as conn:
+            if conn.execute(select(func.count()).select_from(param_sets)).scalar():
+                return None
+            rows = conn.execute(select(func.count().label("n"), func.min(cp.fitted_at).label("first"),
+                                       func.max(cp.fitted_at).label("last"), func.min(cp.window_start).label("start"),
+                                       func.max(cp.window_end).label("end")).where(cp.param_set_id.is_(None))).first()
+            if not rows.n:
+                return None
+            version = f"bias-sigma-{rows.last:%Y%m%d}-initial"
+            set_id = conn.execute(param_sets.insert().values(
+                version=version, created_at=rows.first, origin="legacy", status="production", train_from=rows.start,
+                train_to=rows.end, n_rows=rows.n, n_carried=0, approved=True, deployed_at=rows.first, legacy=True,
+                reason="fitted by `backtest` before versioned parameter sets existed")).inserted_primary_key[0]
+            conn.execute(update(calibration_params).where(cp.param_set_id.is_(None)).values(param_set_id=set_id))
+    except IntegrityError:   # another process starting at the same moment adopted them first
+        return None
+    log.info("migration: station bias/spread rows adopted as param set %s", version)
+    return version

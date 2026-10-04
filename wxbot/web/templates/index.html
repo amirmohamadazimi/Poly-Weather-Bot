@@ -137,6 +137,9 @@
 
 <section id="learning">
   <p class="note" id="lrnNote"></p>
+  <h2>Model updates</h2>
+  <p class="note" id="updNote"></p>
+  <div class="tablewrap"><table id="updTbl"></table></div>
   <h2>Recurring weaknesses</h2>
   <div class="tablewrap"><table id="weakTbl"></table></div>
   <h2>Error classes</h2>
@@ -417,7 +420,26 @@ function fillSelect(el, dims, render) {
   el.value = keep !== "" && keep < dims.length ? keep : Math.min(1, dims.length - 1);
   el.onchange = render; render();
 }
+const setStatusCls = s => s === "production" ? "pos" : s === "rolled_back" ? "neg" : s === "rejected" || s === "retired" ? "muted" : "";
+async function loadUpdates() {
+  const u = await get("/api/learning"), L = u.settings, p = u.production, r = u.last_retrain;
+  $("#updNote").innerHTML = (p ? `Station bias and error spread in use: <b>${esc(p.version)}</b> (${esc(p.origin)}, fitted on ${esc(p.train_from)} to ${esc(p.train_to)}, in production since ${when(p.deployed_at)}). `
+      : "No station bias/spread set yet: the default spreads are used. ") +
+    (L.enabled ? `Every ${L.retrain_days} days candidates are fitted on the last ${L.train_days.join(", ")} days of forecasts and observations and judged on the markets of the newest ${L.holdout_days} days, which none of them was fitted on. ` +
+      `One replaces production only if, on at least ${L.min_markets} of those markets, its Brier score and log loss are both lower and the gain holds in ${pct(L.min_confidence)} of resamples of whole stations. The replaced set is kept and put back automatically if the new one then does reliably worse. `
+      : "Retraining is turned off ([learning] enabled = false). ") +
+    (r ? `Last retraining ${when(r.at)}: ${r.deployed ? "deployed " + esc(r.deployed) : "kept " + esc(r.kept ?? "the default spreads")}. ` : "") +
+    (u.next_retrain ? `Next: ${when(u.next_retrain)}. ` : "") + `${u.ledger_rows.toLocaleString()} resolved markets recorded in the learning ledger.`;
+  table($("#updTbl"), [{h: "Set", f: s => esc(s.version)}, {h: "Status", f: s => s.status.replace("_", " "), c: s => setStatusCls(s.status)},
+    {h: "Origin", f: s => s.origin}, {h: "Trained on", f: s => s.train_from ? `${s.train_from} to ${s.train_to}` : "–"},
+    {h: "Out-of-sample markets", n: 1, f: s => s.evaluation?.n ?? "–"},
+    {h: "Brier production → set", n: 1, f: s => s.evaluation?.n ? `${num(s.evaluation.brier_old, 4)} → ${num(s.evaluation.brier_new, 4)}` : "–"},
+    {h: "Log loss production → set", n: 1, f: s => s.evaluation?.n ? `${num(s.evaluation.log_loss_old, 4)} → ${num(s.evaluation.log_loss_new, 4)}` : "–"},
+    {h: "Station resamples won", n: 1, f: s => pct(s.evaluation?.confidence)},
+    {h: "Decision", w: 1, f: s => esc(s.reason)}, {h: "Deployed", f: s => when(s.deployed_at)}], u.sets);
+}
 async function loadLearning() {
+  loadUpdates().catch(console.error);
   const e = await get("/api/errors");
   $("#lrnNote").textContent = `${e.n} resolved markets, each scored on the production model's last prediction made ${e.min_lead_days}+ day before the target day, and ${e.bets.n} settled bets. ` +
     `A group is flagged only with at least ${e.min_group} markets (${e.min_bet_group} bets) and a gap of at least ${e.flag_z} standard errors, so chance alone rarely flags one. ` +
@@ -452,8 +474,10 @@ async function loadStatus() {
     ["Data sources", bad.length ? `${bad.length} not ok` : "all ok", bad.some(x => x.status === "failing") ? "neg" : bad.length ? "warn" : "pos",
      bad.map(x => esc(x.source) + ": " + x.status).join(" · ")],
     ["Database", db.ok ? "ok" : "error", db.ok ? "pos" : "neg", db.size_mb != null ? `${db.dialect} · ${db.size_mb} MB` : db.dialect],
-    ["Current model", esc(m.production?.version ?? "–"), "", `calibrator: ${esc(m.calibrator.version)}`],
-    ["Last retraining", when(m.last_calibrator_fit), "", "probability calibrators" + (m.last_bias_fit ? ` · station bias ${when(m.last_bias_fit)}` : "")],
+    ["Current model", esc(m.production?.version ?? "–"), "", `bias/spread: ${esc(m.params?.version ?? "defaults")} · calibrator: ${esc(m.calibrator.version)}`],
+    ["Last retraining", when(m.last_retrain?.at ?? m.last_bias_fit), "",
+     (m.last_retrain ? (m.last_retrain.deployed ? "deployed a new bias/spread set" : "kept the bias/spread set") : "station bias/spread")
+     + ` · calibrators ${when(m.last_calibrator_fit)}`],
     ["Experiment", esc(e?.name ?? "–"), "", e ? `started ${when(e.started_at)} · code ${esc((e.code_ref || e.git_ref || "unknown").slice(0, 12))}` : ""],
     ["Markets monitored", s.markets_monitored ?? "–"], ["Active paper positions", s.active_positions],
     ["Cycle every", s.cycle_minutes + " min"], ["Last cycle took", s.last_cycle ? s.last_cycle.summary.seconds + " s" : "–"],

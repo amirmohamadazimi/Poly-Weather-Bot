@@ -14,6 +14,11 @@ the holdout the calibrated probabilities still win. The approved method with
 the lowest holdout log loss is selected, and is used until the next fit round.
 A round with nothing approved means identity (raw probabilities). Every fit is
 kept.
+
+Each calibrator is fitted on, and applied to, the predictions of one station
+bias/spread param set (wxbot/learning/params.py): a new param set shifts the
+raw probabilities, so after a deploy the raw probabilities are used until a
+calibrator fitted on the new set's predictions is approved.
 """
 from __future__ import annotations
 
@@ -29,6 +34,7 @@ from wxbot.calibration.methods import FIT, calibrate
 from wxbot.data.stations import get_station
 from wxbot.db import Database, market_resolutions, markets, predictions, prob_calibrators
 from wxbot.evaluation.metrics import LOG_LOSS_EPS, PRODUCTION, brier, log_loss
+from wxbot.learning.params import version_match
 
 BOOTSTRAP = 2000
 
@@ -64,9 +70,10 @@ def day_end(station: str, local_date: str) -> datetime | None:
     return end.astimezone(timezone.utc)
 
 
-def training_set(db: Database, model_version: str, fit_time: datetime,
-                 min_lead_hours: float) -> list[tuple[datetime, float, int]]:
-    """[(decision time, raw p_yes, outcome 1/0)], oldest decision first."""
+def training_set(db: Database, model_version: str, fit_time: datetime, min_lead_hours: float,
+                 param_set: dict | None = None) -> list[tuple[datetime, float, int]]:
+    """[(decision time, raw p_yes, outcome 1/0)], oldest decision first, from
+    predictions priced with `param_set` (None: with no param set)."""
     mk, r, p = markets.c, market_resolutions.c, predictions.c
     cutoff: dict[str, tuple[datetime, int]] = {}
     for m in db.rows(select(mk.id, mk.station, mk.local_date, r.outcome)
@@ -76,7 +83,8 @@ def training_set(db: Database, model_version: str, fit_time: datetime,
             cutoff[m["id"]] = (min(end - timedelta(hours=min_lead_hours), fit_time), 1 if m["outcome"] == "YES" else 0)
     best: dict[str, tuple[datetime, float]] = {}
     rows = db.rows(select(p.market_id, p.ts, p.p_yes).join(market_resolutions, r.market_id == p.market_id)
-                   .where(r.resolved_at <= fit_time, p.model_version == model_version, PRODUCTION).order_by(p.id))
+                   .where(r.resolved_at <= fit_time, p.model_version == model_version, PRODUCTION,
+                          version_match(p.params_version, param_set)).order_by(p.id))
     for x in rows:
         if x["market_id"] not in cutoff:
             continue
@@ -153,25 +161,28 @@ def selected(rows: list[dict], cfg) -> Calibrator:
     return Calibrator(row["method"], row["version"], row["params"], cfg.model.prob_floor, cfg.model.prob_ceiling)
 
 
-def fit_round(db: Database, cfg, model_version: str, fit_time: datetime) -> list[dict]:
-    """Fit every configured method, judge it on the holdout, store the round."""
-    out = judge(training_set(db, model_version, fit_time, float(cfg.strategy.min_lead_hours)), cfg, model_version,
-                fit_time)
+def fit_round(db: Database, cfg, model_version: str, fit_time: datetime,
+              param_set: dict | None = None) -> list[dict]:
+    """Fit every configured method on the predictions of `param_set`, judge it
+    on the holdout, store the round."""
+    out = judge(training_set(db, model_version, fit_time, float(cfg.strategy.min_lead_hours), param_set), cfg,
+                model_version, fit_time)
     with db.engine.begin() as conn:
         for row in out:
-            conn.execute(prob_calibrators.insert().values(**row))
+            conn.execute(prob_calibrators.insert().values(**row, params_version=param_set and param_set["version"]))
     return out
 
 
-def active_calibrator(db: Database, cfg, model_version: str, now: datetime) -> Calibrator:
-    """The selected calibrator of the newest fit round at or before `now`; identity if none."""
+def active_calibrator(db: Database, cfg, model_version: str, now: datetime,
+                      param_set: dict | None = None) -> Calibrator:
+    """The selected calibrator of the newest fit round at or before `now` for
+    `param_set`; identity if none."""
     pc = prob_calibrators.c
-    latest = db.one(select(func.max(pc.fitted_at).label("t")).where(pc.model_version == model_version,
-                                                                     pc.fitted_at <= now))
+    mine = (pc.model_version == model_version, version_match(pc.params_version, param_set))
+    latest = db.one(select(func.max(pc.fitted_at).label("t")).where(*mine, pc.fitted_at <= now))
     if not latest or latest["t"] is None:
         return identity()
-    row = db.one(select(prob_calibrators).where(pc.model_version == model_version, pc.fitted_at == latest["t"],
-                                                pc.selected.is_(True)))
+    row = db.one(select(prob_calibrators).where(*mine, pc.fitted_at == latest["t"], pc.selected.is_(True)))
     if row is None:
         return identity()
     return Calibrator(row["method"], row["version"], row["params"], cfg.model.prob_floor, cfg.model.prob_ceiling)

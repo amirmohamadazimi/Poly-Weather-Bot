@@ -65,9 +65,10 @@ one-month experiment:
 ## How a bet happens
 
 ```
-markets (Gamma API) ─┐
-forecasts (Open-Meteo, 5 models) ─┼─> prediction ─> calibrated probability ─> signal (rules) ─> paper bet ─> settlement ─> stats
-calibration (backtest) ─┘                                                                        (Polymarket resolution)
+markets (Gamma API) ──────────────────────┐
+forecasts (Open-Meteo, 5 models) ─────────┼─> prediction ─> calibrated probability ─> signal (rules) ─> paper bet
+bias/spread set (backtest, retraining) ───┘
+paper bet ─> settlement (Polymarket resolution) ─> stats and learning (ledger, weekly retraining)
 ```
 
 1. **Discover** open `daily-temperature` events. The resolution station is read
@@ -78,8 +79,9 @@ calibration (backtest) ─┘                                                   
 2. **Forecast** the station's daily max/min for its local calendar day from five
    Open-Meteo models (ECMWF, GFS, ICON, GEM, JMA).
 3. **Predict** with `normal-multimodel-v1`: a normal distribution centred on the
-   bias-corrected model mean, with sigma = the larger of the backtest error and
-   the models' disagreement. Bucket probability accounts for whole-degree
+   bias-corrected model mean, with sigma = the larger of the fitted error spread and
+   the models' disagreement. The bias and spread come from the production
+   parameter set (see [How the learning system works](#how-the-learning-system-works)). Bucket probability accounts for whole-degree
    reporting. Probabilities are clamped to 1–99%. Two baselines are priced on
    the same inputs but never traded (see [Models and baselines](#models-and-baselines)).
 4. **Calibrate** the probability with the approved probability calibrator, if
@@ -91,6 +93,9 @@ calibration (backtest) ─┘                                                   
 6. **Paper bet:** size it, then simulate the fill by walking the real CLOB order
    book (taking at most 25% of each level, plus slippage and fees).
 7. **Settle** when Polymarket resolves the market (prices pinned to 1/0).
+8. **Learn:** record the prediction, its inputs, price, decision and result in
+   the learning ledger, and retrain the station bias and spread once a week,
+   deploying a new set only if it does better on markets it was not fitted on.
 
 Every row is insert-only, and the chain bet → signal (with every rule result
 and sizing cap) → prediction (with every model input) → forecast snapshot lets
@@ -240,6 +245,64 @@ method passes: isotonic improved log loss slightly (0.2311 → 0.2298) but not
 Brier, and won in only 67% of resamples; Platt was worse on Brier. So the raw
 probabilities stay in use.
 
+### How the learning system works
+
+The model changes only through rules tested on data it was not fitted on
+(`wxbot/learning/`).
+
+**The learning ledger.** When a market resolves, `prediction_outcomes` gets one
+row for it: the production model's decision prediction (its last made a day or
+more ahead), the model, parameter set and calibrator versions, the weather
+models' values and the features used, the forecast source, the market's price
+and liquidity then, the signal's decision, any paper bet and its result, the
+outcome, and the error class (85% and NO is significant overconfidence, 25% and
+YES is underestimation) with its Brier score and log loss. Rows are only ever
+added. A cycle that records significant errors logs one
+`SIGNIFICANT_MODEL_ERROR` event listing them, and the Learning tab breaks the
+errors down to find recurring patterns.
+
+**Retraining the station bias and spread.** The production model shifts the
+forecast by a bias and widens it by an error spread, fitted per station,
+high/low and lead time. Each fit is a versioned parameter set (`param_sets`),
+and every prediction records the set that priced it. Every 7 days the cycle:
+
+1. holds out the ledger rows of the newest 7 market days;
+2. fits one candidate on each of the last 30, 60 and 90 days of past forecasts
+   (Open-Meteo Previous Runs) and observations (METAR) that ended before the
+   first holdout decision could have been made, so no holdout weather leaks in.
+   A station that cannot be fetched, or has too few days, keeps production's
+   numbers;
+3. prices every holdout prediction again, from the inputs stored when it was
+   made, with each candidate and with production;
+4. approves a candidate only if, on at least 200 holdout markets from at least
+   5 stations, its Brier score **and** log loss are both lower, the log-loss
+   gain holds in 95% of 2,000 bootstrap resamples of whole stations (one
+   station's days are not independent), and it is no worse than the
+   calibrated probabilities the bot actually used. Doing better on its own
+   training days counts for nothing;
+5. deploys the approved candidate with the lowest log loss and keeps the old
+   set as `previous`. Every candidate is stored with its evaluation, approved
+   or not.
+
+After a deploy, each cycle compares the new set with the previous one on the
+resolved markets the new set priced. If the previous set does better by the
+same rule, it goes back into production automatically and the new one is
+marked `rolled_back`. `python main.py rollback` does the same by hand, and
+`python main.py retrain` retrains at once. `MODEL_RETRAINED`,
+`MODEL_DEPLOYED` and `MODEL_ROLLBACK` events are in `system_events` (column
+`code`), and the Learning tab and REPORT.md list every set.
+
+The probability calibrators are refitted daily by their own rule (above). Each
+is fitted on, and applied to, the predictions of one parameter set, so after a
+deploy the raw probabilities are used until a calibrator fitted on the new
+set's predictions is approved.
+
+A database's first parameter set comes from `python main.py backtest`, with
+nothing to compare it with; a database from before v2 M9 adopts its existing
+fit as that first set. Later `backtest` fits are stored as candidates and never
+used. `[learning]` in `config.toml` holds every setting; `enabled = false`
+stops retraining and rollback (the ledger is still written).
+
 ### Sizing and risk
 
 The bankroll starts at a virtual $100. `fixed_fraction` (2% of equity, so $2
@@ -286,8 +349,8 @@ The dashboard (`python main.py web`, http://localhost:8000) has seven tabs:
 * **Portfolio:** open positions at cost and at the bid, what each would pay if it wins, its largest possible loss and share of equity, and how much of each risk limit (total, per event, per city-day, daily loss) is in use.
 * **Bet history:** every paper bet, searchable by city, date, bucket or `#id`, and filtered by status and side.
 * **Model performance:** bankroll, P/L, drawdown, wins and losses, calibration (raw and calibrated), model vs market, and Brier score, log loss and accuracy (did the most likely bucket win) by market day for the model and the market, plus the model comparison.
-* **Learning:** where the model goes wrong. Every resolved market gets an error class (85% and NO is significant overconfidence; 25% and YES is underestimation), and predictions and bets are broken down by city, lead time, highest or lowest, the bucket's distance from the forecast, probability band, how much the weather models disagreed, distance from the climate normal, liquidity and model version. A group is flagged as a weakness (overconfident, YES too often or too rarely, worse than the market) only with 30+ markets (15+ bets) and a gap of 3+ standard errors, so chance alone rarely flags one; REPORT.md lists the same weaknesses. The largest errors are listed with any bet placed on them.
-* **System health:** each data source's last success and status (ok, stale after three missed fetches, failing when its latest warning is newer than its latest success), last market scan and prediction, database size and row counts, the production and shadow models, the calibrator in use and when calibration was last refitted, the experiment and code version, and recent errors.
+* **Learning:** where the model goes wrong. Every resolved market gets an error class (85% and NO is significant overconfidence; 25% and YES is underestimation), and predictions and bets are broken down by city, lead time, highest or lowest, the bucket's distance from the forecast, probability band, how much the weather models disagreed, distance from the climate normal, liquidity and model version. A group is flagged as a weakness (overconfident, YES too often or too rarely, worse than the market) only with 30+ markets (15+ bets) and a gap of 3+ standard errors, so chance alone rarely flags one; REPORT.md lists the same weaknesses. The largest errors are listed with any bet placed on them. **Model updates** lists every station bias/spread set: which is in use, each retraining's out-of-sample scores against production and its decision, and any rollback.
+* **System health:** each data source's last success and status (ok, stale after three missed fetches, failing when its latest warning is newer than its latest success), last market scan and prediction, database size and row counts, the production and shadow models, the bias/spread set and calibrator in use, the last retraining and calibrator fit, the experiment and code version, and recent errors.
 
 The dashboard and report always count from the database's own starting
 bankroll (its experiment's, or the one its bankroll history implies), so a
@@ -299,7 +362,9 @@ There are two backtests.
 bias/sigma fitted only on observations available when that forecast was issued,
 using the forecasts each model actually issued 1–3 days ahead (Open-Meteo
 Previous Runs API) and METAR observations (Iowa Environmental Mesonet), on a
-ladder of synthetic buckets. It also fits the calibration the live model uses.
+ladder of synthetic buckets. On a database's first run it also fits the station
+bias and spread the live model uses (its first parameter set; later fits are
+stored but only retraining can replace production).
 
 `backtest-markets` replays real closed Polymarket markets at the prices that
 were on offer, using only what was known at each decision time (v2 M8):
@@ -419,6 +484,7 @@ wxbot/strategy/             betting rules, fill simulation, sizing
 wxbot/execution/            paper broker (cash check), bankroll ledger and mark-to-market, live-trading guard
 wxbot/experiment.py         records which experiment a database holds
 wxbot/evaluation/           metrics (ROI, drawdown, Brier, log loss, ECE, model comparison), error analysis
+wxbot/learning/             learning ledger, versioned bias/spread sets, retraining, approval and rollback
 wxbot/health.py             data-source, database and model status for the dashboard
 wxbot/engine.py             one cycle: collect -> predict -> bet -> settle
 wxbot/runner.py             background loop

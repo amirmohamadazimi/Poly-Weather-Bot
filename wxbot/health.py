@@ -3,6 +3,7 @@ database reachable, which model and calibrator are in use, and when they were
 last refitted. Reads the database only."""
 from __future__ import annotations
 
+import json
 import os
 from datetime import datetime, timedelta, timezone
 
@@ -14,6 +15,7 @@ from wxbot.db import (
 )
 from wxbot.evaluation.metrics import latest_calibrators
 from wxbot.experiment import current
+from wxbot.learning import params
 
 # name, bot_state key of its last success, components whose warnings and errors
 # are its failures, and the config key of how often it is fetched
@@ -90,6 +92,7 @@ def model_status(db: Database) -> dict:
     active = next((c for c in cals if c["selected"]), None)
     bias = db.one(select(func.max(calibration_params.c.fitted_at).label("t")))
     backtest = db.one(select(func.max(backtest_runs.c.finished_at).label("t")))
+    ps, last_retrain = params.production(db), db.get_state("last_retrain")
     return {
         "production": next((m for m in models if m["role"] == "production"), None),
         "shadows": [m for m in models if m["role"] == "shadow"],
@@ -99,6 +102,11 @@ def model_status(db: Database) -> dict:
         "last_calibrator_result": [{k: c[k] for k in ("method", "approved", "selected", "reason")} for c in cals],
         "last_bias_fit": as_utc(bias["t"]) if bias else None,
         "last_backtest": as_utc(backtest["t"]) if backtest else None,
+        # station bias/spread parameters (wxbot/learning/): the set in use and the last retraining
+        "params": ps and {"version": ps["version"], "origin": ps["origin"], "train_from": ps["train_from"],
+                          "train_to": ps["train_to"], "deployed_at": as_utc(ps["deployed_at"])},
+        "last_retrain": json.loads(last_retrain) if last_retrain else None,
+        "next_retrain": as_utc(db.get_state("next_retrain_at")),
     }
 
 

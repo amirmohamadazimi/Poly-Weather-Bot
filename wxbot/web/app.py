@@ -22,6 +22,7 @@ from wxbot.execution.portfolio import latest_snapshots, open_positions
 from wxbot.experiment import starting_bankroll
 from wxbot.export import export_zip_bytes, table_csv
 from wxbot.health import system_health
+from wxbot.learning import summary as learning_summary
 from wxbot.report import build_report, to_markdown
 
 TEMPLATE = Path(__file__).parent / "templates" / "index.html"
@@ -122,6 +123,10 @@ def create_app(cfg, db: Database, runner=None, now=utcnow) -> FastAPI:
     @app.get("/api/errors", dependencies=deps)
     def errors():
         return error_analysis(db)
+
+    @app.get("/api/learning", dependencies=deps)
+    def learning():
+        return {**learning_summary(db), "settings": cfg.learning.as_dict()}
 
     @app.get("/api/performance", dependencies=deps)
     def performance():
