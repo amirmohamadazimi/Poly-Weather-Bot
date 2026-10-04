@@ -1,0 +1,65 @@
+# Docker image check (v2 M10): the image builds, keeps secrets and local state
+# out, starts the dashboard as an unprivileged user on a root-owned data
+# directory, stays in paper mode, and refuses live mode.
+name: docker
+
+on:
+  pull_request:
+    paths: &docker_paths
+      - "Dockerfile"
+      - ".dockerignore"
+      - "docker-compose.yml"
+      - "deploy/**"
+      - "requirements.txt"
+      - ".github/workflows/docker.yml"
+  push:
+    branches: [main]
+    paths: *docker_paths
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compose file is valid
+        run: docker compose config --quiet
+
+      - name: Build
+        run: |
+          echo "WXBOT_APP__DASHBOARD_PASSWORD=must-not-ship" > .env   # .dockerignore must keep this out
+          docker build -t wxbot:ci .
+
+      - name: No secrets or local state in the image
+        run: docker run --rm --entrypoint sh wxbot:ci -c 'test ! -e /app/.env && test ! -e /app/data'
+
+      - name: Starts healthy, in paper mode, as an unprivileged user
+        run: |
+          sudo mkdir -p /tmp/wxdata                    # root-owned, as on a fresh server
+          docker run -d --name wx -p 8000:8000 -e WXBOT_BOOTSTRAP=false -e WXBOT_SCHEDULE__AUTOSTART=false \
+            -v /tmp/wxdata:/app/data wxbot:ci
+          for i in $(seq 1 60); do curl -fsS http://127.0.0.1:8000/healthz && break; sleep 1; done
+          curl -fsS http://127.0.0.1:8000/healthz | grep -q '"mode":"paper"'
+          test "$(docker exec wx awk '/^Uid:/ {print $2}' /proc/1/status)" = "1000"
+          test -f /tmp/wxdata/wxbot.sqlite3
+          docker run --rm -v /tmp/wxdata:/app/data wxbot:ci report | grep -q "PAPER TRADING"
+
+      - name: Live mode is refused
+        run: |
+          if docker run --rm -e WXBOT_APP__MODE=live wxbot:ci once > live.log 2>&1; then
+            cat live.log; echo "::error::the container started in live mode"; exit 1
+          fi
+          cat live.log
+          grep -q "LiveTradingDisabled" live.log
+
+      - name: Container log
+        if: always()
+        run: docker logs wx || true

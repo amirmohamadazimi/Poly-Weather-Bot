@@ -1,3 +1,5 @@
+# docker compose up -d --build   (README "Running on a server")
+# PAPER TRADING ONLY: app.mode is forced to "paper" below.
 services:
   wxbot:
     build: .
@@ -7,7 +9,13 @@ services:
         required: false
     environment:
       WXBOT_APP__HOST: 0.0.0.0
+      WXBOT_APP__MODE: paper         # wins over .env
     ports:
       - "8000:8000"
     volumes:
       - ./data:/app/data             # SQLite database survives rebuilds
+    logging:                         # keep weeks of unattended logs from filling the disk
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"

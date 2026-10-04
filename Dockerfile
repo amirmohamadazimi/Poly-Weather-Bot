@@ -1,10 +1,19 @@
+# Polymarket weather paper-trading bot: dashboard + autonomous loop.
+#   docker compose up -d --build      (see README "Running on a server")
+# PAPER TRADING ONLY: the container forces app.mode = paper.
 FROM python:3.11-slim
-ENV PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
+ENV PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install -r requirements.txt
+# the bot runs as this unprivileged user; it can write only /app/data
+RUN useradd --create-home --uid 1000 wxbot
 COPY . .
-ENV WXBOT_APP__HOST=0.0.0.0
+ENV WXBOT_APP__HOST=0.0.0.0 WXBOT_APP__MODE=paper
 EXPOSE 8000
-HEALTHCHECK --interval=60s --timeout=5s CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz')"
-CMD ["python", "main.py"]
+# the first start can take a while: it loads observation history and fits the station
+# bias/spread before the dashboard starts (deploy/docker-entrypoint.sh)
+HEALTHCHECK --interval=60s --timeout=5s --start-period=30m \
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz')"
+ENTRYPOINT ["/app/deploy/docker-entrypoint.sh"]
+CMD ["run"]
