@@ -20,6 +20,7 @@ others, and a failure in one stage is logged and does not stop the rest.
 | Paper trading | `wxbot/execution/paper.py` (`PaperBroker`: refuses fills that would overdraw cash), `wxbot/execution/portfolio.py` (ledger, mark-to-market) | `paper_bets` (with sizing and quotes), `bankroll_snapshots` |
 | Experiment identity | `wxbot/experiment.py` (`ensure_experiment`, at engine start) | `experiments` |
 | Resolution and settlement | `Engine.settle` | `market_resolutions`, `paper_bets`, `markets.closed_time` |
+| Experiment end | `wxbot/experiment.py` (`check_end`, each cycle after settlement; the `experiment_open` rule stops new bets after `planned_days`) | `bot_state`, `system_events` (EXPERIMENT_ENDED, EXPERIMENT_COMPLETE) |
 | Price history (after resolution) | `Engine._store_price_histories`, `PolymarketClient.get_price_history` | `market_price_history` |
 | Observations | `wxbot/data/weather.py` (`IEMObservations`) | `weather_observations` |
 | Learning ledger | `wxbot/learning/outcomes.py` (`record`, each cycle after settlement) | `prediction_outcomes`, `system_events` (SIGNIFICANT_MODEL_ERROR) |
@@ -27,7 +28,7 @@ others, and a failure in one stage is logged and does not stop the rest.
 | Calibration (offline) | `wxbot/backtest.py` (the first param set) | `calibration_params`, `param_sets`, `backtest_runs` |
 | Observation history (offline) | `wxbot/history.py` (`python main.py climatology`) | `weather_observations` |
 | Market backtest (offline, own database) | `wxbot/backtesting/` (`collect`, `replay` with no look-ahead, `evaluate`, `report`; `python main.py backtest-markets`) | `historical_forecasts`, `backtest_predictions`, `backtest_runs`, plus closed `markets`, `market_resolutions`, `market_price_history`, `weather_observations` |
-| Evaluation | `wxbot/evaluation/metrics.py` (incl. `model_comparison`, `daily_scores`, `portfolio_view`), `wxbot/report.py` | REPORT.md, dashboard |
+| Evaluation | `wxbot/evaluation/metrics.py` (incl. `model_comparison`, `daily_scores`, `portfolio_view`), `wxbot/evaluation/operation.py` (cycles, gaps, errors), `wxbot/report.py` | REPORT.md, dashboard |
 | Error analysis | `wxbot/evaluation/errors.py` (`error_analysis`: error classes, breakdowns, flagged weaknesses) | dashboard Learning tab, REPORT.md |
 | System health | `wxbot/health.py` (data sources, database, model, param set and calibrator, last retraining and refits) | dashboard System health tab |
 

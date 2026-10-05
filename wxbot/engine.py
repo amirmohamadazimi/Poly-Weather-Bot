@@ -27,7 +27,7 @@ from wxbot.db import (
 )
 from wxbot.execution import portfolio
 from wxbot.execution.paper import BrokerRefused
-from wxbot.experiment import ensure_experiment
+from wxbot.experiment import check_end, ensure_experiment, is_open
 from wxbot.features import FEATURE_SET, Features, build_features, climatology_window, observed_history
 from wxbot.learning import learn, outcomes, retrain
 from wxbot.learning import params as param_sets
@@ -96,6 +96,7 @@ class Engine:
             ("calibration", self.maybe_fit_calibration),
             ("signals", self.predict_and_trade),
             ("settlement", self.settle),
+            ("experiment", self.check_experiment),
             ("observations", self.maybe_collect_observations),
             ("learning", self.learn),
         ]
@@ -348,6 +349,7 @@ class Engine:
             n_models=len(pred.inputs["model_values_c"]), forecast_age_min=forecast_age, sigma_c=pred.sigma_c,
             market_open=not m["closed"], has_position=portfolio.has_open_position(self.db, m["id"]),
             daily_pnl=portfolio.daily_realized_pnl(self.db, now), initial_bankroll=cfg.bankroll.initial,
+            experiment_open=is_open(self.experiment, now),
             data_valid=bool(pred.inputs.get("data_quality", {}).get("ok", True)),
         )
         results = rules.evaluate(ctx, cfg)
@@ -572,6 +574,11 @@ class Engine:
         return stored
 
     # -- 7. learning ---------------------------------------------------------
+    def check_experiment(self) -> dict:
+        """After the experiment's planned end: log that it ended, and that it is
+        complete once its last bet has settled (wxbot/experiment.py)."""
+        return check_end(self.db, self.experiment, self.clock())
+
     def learn(self) -> dict:
         """Record newly resolved markets in the learning ledger, roll back a
         deployed param set that does worse than the one before it, and retrain

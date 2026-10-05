@@ -93,6 +93,7 @@ class Context:
     initial_bankroll: float
     stake: float | None = None   # None during the pre-check, before sizing
     data_valid: bool = True      # forecast snapshot passed data/validation.py
+    experiment_open: bool = True  # before the experiment's planned end (wxbot/experiment.py)
     extra: dict = field(default_factory=dict)
 
 
@@ -107,6 +108,7 @@ def evaluate(ctx: Context, cfg) -> list[dict]:
     edge = None if price is None else ctx.model_prob - price
     ev = None if not price else ctx.model_prob / price - 1.0
     results = [
+        _r("experiment_open", ctx.experiment_open, ctx.experiment_open, True),
         _r("market_open", ctx.market_open, ctx.market_open, True),
         _r("confidence", ctx.model_prob >= s.min_model_prob, ctx.model_prob, f">= {s.min_model_prob}"),
         _r("price_available", price is not None, price, "ask exists"),

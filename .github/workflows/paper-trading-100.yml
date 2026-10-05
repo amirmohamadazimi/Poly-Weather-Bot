@@ -5,8 +5,9 @@
 # while a new commit's CI is running or red, runs keep using the last green one.
 # Every run records the commit it ran (WXBOT_GIT_REF); the experiments table
 # keeps the commit it started on, and each change of code version is logged in
-# system_events, so every result can be tied to the code that produced it. The starting bankroll and
-# experiment name are pinned here, so a config change cannot alter them.
+# system_events, so every result can be tied to the code that produced it.
+# The starting bankroll, experiment name and length (30 days) are pinned here,
+# so a config change cannot alter them.
 #
 # The SQLite database lives on the `paper-data-100` branch as wxbot.sqlite3.gz
 # (a single commit that is replaced each run, so the repo does not grow). Each
@@ -41,6 +42,7 @@ jobs:
       WXBOT_APP__MODE: paper
       WXBOT_BANKROLL__INITIAL: "100"
       WXBOT_EXPERIMENT__NAME: exp2-100usd
+      WXBOT_EXPERIMENT__DAYS: "30"   # then no new bets; open ones settle (recorded once, so it cannot move)
       STATE_BRANCH: paper-data-100
       STATE_DIR: ${{ github.workspace }}/state
       WXBOT_APP__DATABASE_URL: sqlite:///${{ github.workspace }}/state/wxbot.sqlite3

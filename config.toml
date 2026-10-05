@@ -26,6 +26,11 @@ autostart = true            # start the autonomous loop when the app starts
 # starting bankroll, code version and these settings. One database holds one
 # experiment: a different starting bankroll on an existing database is refused.
 name = "paper-100"
+# Length in days (0 = no end). After it the bot opens no new bets; open ones
+# still settle, and once the last has, the experiment is complete. Recorded with
+# the experiment the first time it is set, so a later config change cannot move
+# the end of an experiment already under way.
+days = 0
 
 [bankroll]
 # Virtual dollars. Experiment 1 ($1,000) runs frozen code with its own config.

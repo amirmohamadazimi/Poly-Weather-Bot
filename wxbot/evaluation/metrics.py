@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+from datetime import datetime
 import random
 import statistics
 from collections import defaultdict
@@ -82,9 +83,10 @@ def bootstrap_roi_ci(stakes: list[float], pnls: list[float], n: int = 2000, seed
     return rois[int(0.025 * n)], rois[int(0.975 * n) - 1]
 
 
-def overview(db: Database, initial: float) -> dict:
+def overview(db: Database, initial: float, now: datetime | None = None) -> dict:
     from wxbot.execution.portfolio import bankroll
-    from wxbot.experiment import current
+    from wxbot.db import utcnow
+    from wxbot.experiment import current, progress
     bets = db.rows(select(paper_bets).order_by(paper_bets.c.id))
     settled = [b for b in bets if b["status"] in ("WON", "LOST")]
     wins = [b for b in settled if b["status"] == "WON"]
@@ -111,7 +113,7 @@ def overview(db: Database, initial: float) -> dict:
     return {
         "mode": "PAPER TRADING", "real_money": 0.0,
         "experiment": exp and {**{k: exp[k] for k in ("name", "initial_bankroll", "started_at", "git_ref")},
-                               "code_ref": db.get_state("code_ref")},
+                               "code_ref": db.get_state("code_ref"), "progress": progress(db, exp, now or utcnow())},
         "starting_bankroll": initial, "cash": bank.cash, "available_cash": bank.cash,
         "open_exposure": bank.open_exposure, "market_value": bank.market_value,
         "unrealized_pnl": bank.unrealized_pnl, "book_equity": bank.book_equity,

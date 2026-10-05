@@ -1,13 +1,16 @@
-"""End-of-experiment performance report (markdown + JSON)."""
+"""The experiment's performance report (markdown + JSON): REPORT.md and the dashboard's export."""
 from __future__ import annotations
 
 import json
+from datetime import datetime
 
 from sqlalchemy import desc, select
 
-from wxbot.db import Database, markets, paper_bets, system_events
+from wxbot.db import Database, markets, paper_bets, system_events, utcnow
 from wxbot.evaluation.errors import error_analysis
 from wxbot.evaluation.metrics import latest_calibrators, model_comparison, overview, prediction_calibration
+from wxbot.evaluation.operation import operation
+from wxbot.experiment import current
 from wxbot.learning import summary as learning_summary
 
 
@@ -19,13 +22,14 @@ def _num(x, nd=4) -> str:
     return "n/a" if x is None else f"{x:.{nd}f}"
 
 
-def build_report(db: Database, initial: float) -> dict:
-    ov = overview(db, initial)
+def build_report(db: Database, initial: float, now: datetime | None = None) -> dict:
+    now = now or utcnow()
+    ov = overview(db, initial, now)
     cal = prediction_calibration(db)
     return {"overview": ov, "prediction_calibration": cal, "model_comparison": model_comparison(db),
             "calibrators": latest_calibrators(db), "errors": error_analysis(db),
             "model_updates": learning_summary(db, limit=10),
-            "verdict": verdict(ov, cal),
+            "verdict": verdict(ov, cal), "operation": operation(db, current(db), now),
             "status": status(db), "bets": all_bets(db)}
 
 
@@ -109,6 +113,39 @@ def model_updates(mu: dict | None) -> list[str]:
     return out
 
 
+def progress_text(p: dict | None) -> str:
+    """'day 4 of 30, ends ...', 'ended ...' or 'complete ...' for the experiment line."""
+    if not p or p["state"] == "none":
+        return ""
+    if p["state"] == "running":
+        return (f" · day {p['day']} of {p['planned_days']}, ends {p['ends_at'][:16].replace('T', ' ')} UTC"
+                if p["planned_days"] else f" · day {p['day']}")
+    when = (p["ended_at"] or p["ends_at"] or "")[:16].replace("T", " ")
+    if p["state"] == "ended":
+        return f" · **ended** {when} UTC after {p['planned_days']} days; {p['open_bets']} bets still to settle"
+    return (f" · **complete**: ended {when} UTC after {p['planned_days']} days, every bet settled "
+            f"{(p['completed_at'] or '')[:16].replace('T', ' ')} UTC")
+
+
+def operation_lines(op: dict | None) -> list[str]:
+    if not op or not op["cycles"]:
+        return []
+    missing = op["days_without_cycle"]
+    gap = op["longest_gap"]
+    errors = ", ".join(f"{k} {v}" for k, v in sorted(op["step_errors"].items(), key=lambda kv: -kv[1]))
+    return ["", "## Operation", "",
+            "How continuously the bot ran: each completed cycle collects data, predicts, bets and settles.", "",
+            "| Measure | Value |", "|---|---:|",
+            f"| Cycles completed | {op['cycles']} |",
+            f"| First / last cycle (UTC) | {str(op['first'])[:16]} / {str(op['last'])[:16]} |",
+            f"| Median time between cycles | {_num(op['median_gap_hours'], 1)} h |",
+            f"| Longest gap | {_num(op['longest_gap_hours'], 1)} h"
+            + (f" ({gap[0][:16].replace('T', ' ')} to {gap[1][:16].replace('T', ' ')})" if gap else "") + " |",
+            f"| Finished days without a cycle | {len(missing)} of {op['days']}"
+            + (f" ({', '.join(missing[:10])}{', ...' if len(missing) > 10 else ''})" if missing else "") + " |",
+            f"| Errors logged | {errors or 'none'} |"]
+
+
 def to_markdown(rep: dict) -> str:
     ov, cal = rep["overview"], rep["prediction_calibration"]
     exp = ov.get("experiment")
@@ -118,7 +155,7 @@ def to_markdown(rep: dict) -> str:
         *([f"Experiment: **{exp['name']}** · started {str(exp['started_at'])[:16]} UTC · starting bankroll "
            f"${exp['initial_bankroll']:,.2f}" + (f" · code {exp['git_ref'][:12]}" if exp.get("git_ref") else "")
            + (f" (now {exp['code_ref'][:12]})" if exp.get("code_ref") and exp["code_ref"] != exp.get("git_ref")
-              else ""), ""]
+              else "") + progress_text(exp.get("progress")), ""]
           if exp else []),
         "## Verdict", "", *[f"- {n}" for n in rep["verdict"]], "",
         "## Results", "",
@@ -204,6 +241,7 @@ def to_markdown(rep: dict) -> str:
             lines.append("None flagged yet.")
         counts = ", ".join(f"{c['class']} {c['n']}" for c in err["classes"])
         lines += ["", f"Error classes: {counts}."]
+    lines += operation_lines(rep.get("operation"))
     days = by_day(rep.get("bets") or [])
     if days:
         lines += ["", "## Results by market day", "",

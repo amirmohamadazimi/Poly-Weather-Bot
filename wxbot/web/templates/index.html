@@ -214,10 +214,17 @@ function kpis(el, items) {
 }
 
 // -- overview ---------------------------------------------------------------------
+function progressText(p) {
+  if (!p || p.state === "none") return "";
+  if (p.state === "running") return p.planned_days ? ` · day ${p.day} of ${p.planned_days}, ends ${when(p.ends_at)}` : ` · day ${p.day}`;
+  if (p.state === "ended") return ` · ended ${when(p.ended_at || p.ends_at)}, ${p.open_bets} bets still to settle`;
+  return ` · complete: every bet settled ${when(p.completed_at)}`;
+}
+
 async function loadOverview() {
   const o = await get("/api/overview");
   const e = o.experiment;
-  $("#expLine").textContent = e ? `Experiment ${e.name} · started ${when(e.started_at)} · code ${(e.code_ref || e.git_ref || "unknown").slice(0, 12)}` : "";
+  $("#expLine").textContent = e ? `Experiment ${e.name} · started ${when(e.started_at)}${progressText(e.progress)} · code ${(e.code_ref || e.git_ref || "unknown").slice(0, 12)}` : "";
   kpis($("#heroKpis"), [
     ["Starting bankroll", usd(o.starting_bankroll)],
     ["Current equity", usd(o.equity), "", "open positions at the bid"],
