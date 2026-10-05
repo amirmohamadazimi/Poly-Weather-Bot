@@ -44,14 +44,21 @@
   (`python main.py climatology --if-missing`; retried on later runs if it
   fails) so the climatology baseline is scored from day one, and fits the
   forecast calibration (`backtest --if-missing`).
-* State: `wxbot.sqlite3.gz` and `REPORT.md` on the `paper-data-100` branch.
+* Research report (from v2 M14): each run also writes `RESEARCH.md`, which
+  answers whether the experiment found positive EV, with a verdict that needs
+  five checks to pass, not a positive P/L. It is interim until the end,
+  preliminary while the last bets settle, then final.
+* State: `wxbot.sqlite3.gz`, `REPORT.md` and `RESEARCH.md` on the
+  `paper-data-100` branch.
 
 ## Reproducing an experiment
 
 1. Check out the code the experiment ran (for experiment 1, `git checkout exp1-frozen`).
 2. Download `wxbot.sqlite3` from its state branch into `data/`.
-3. `python main.py report` rebuilds the report from the stored rows, and
-   `python main.py export DIR` dumps every table. Every bet links to the
+3. `python main.py report` and `python main.py research` rebuild the reports
+   from the stored rows (the research report is the same every time: its
+   resampling uses a fixed seed), and `python main.py export DIR` dumps every
+   table. Every bet links to the
    signal, prediction and forecast snapshot that produced it, with the exact
    inputs and order-book levels used.
 4. `python main.py backtest --days 90` re-runs the walk-forward forecast

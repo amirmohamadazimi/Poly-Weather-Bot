@@ -103,6 +103,12 @@ jobs:
         run: |
           python main.py report > "$STATE_DIR/REPORT.md"
           cat "$STATE_DIR/REPORT.md" >> "$GITHUB_STEP_SUMMARY"
+          # the research report (did the experiment find positive EV?); a failure keeps the last one and the run
+          if python main.py research > "$RUNNER_TEMP/RESEARCH.md"; then
+            mv "$RUNNER_TEMP/RESEARCH.md" "$STATE_DIR/RESEARCH.md"
+          else
+            echo "::warning::the research report failed; RESEARCH.md was not updated"
+          fi
           # fold the SQLite write-ahead log into the main file before saving it
           python -c "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute('PRAGMA wal_checkpoint(TRUNCATE)'); c.execute('PRAGMA journal_mode=DELETE'); c.close()" "$STATE_DIR/wxbot.sqlite3"
           rm -f "$STATE_DIR"/wxbot.sqlite3-wal "$STATE_DIR"/wxbot.sqlite3-shm

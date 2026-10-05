@@ -29,6 +29,7 @@ others, and a failure in one stage is logged and does not stop the rest.
 | Observation history (offline) | `wxbot/history.py` (`python main.py climatology`) | `weather_observations` |
 | Market backtest (offline, own database) | `wxbot/backtesting/` (`collect`, `replay` with no look-ahead, `evaluate`, `report`; `python main.py backtest-markets`) | `historical_forecasts`, `backtest_predictions`, `backtest_runs`, plus closed `markets`, `market_resolutions`, `market_price_history`, `weather_observations` |
 | Evaluation | `wxbot/evaluation/metrics.py` (incl. `model_comparison`, `daily_scores`, `portfolio_view`), `wxbot/evaluation/operation.py` (cycles, gaps, errors), `wxbot/report.py` | REPORT.md, dashboard |
+| Research report | `wxbot/research.py` (`build`, `verdict`, `to_markdown`; `python main.py research`) | RESEARCH.md, `/api/research`, `/export/research.md` |
 | Error analysis | `wxbot/evaluation/errors.py` (`error_analysis`: error classes, breakdowns, flagged weaknesses) | dashboard Learning tab, REPORT.md |
 | System health | `wxbot/health.py` (data sources, database, model, param set and calibrator, last retraining and refits) | dashboard System health tab |
 

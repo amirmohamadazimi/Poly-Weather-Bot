@@ -21,6 +21,7 @@ from wxbot.evaluation.errors import error_analysis
 from wxbot.execution.portfolio import latest_snapshots, open_positions
 from wxbot.experiment import starting_bankroll
 from wxbot.export import export_zip_bytes, table_csv
+from wxbot import research
 from wxbot.health import system_health
 from wxbot.learning import summary as learning_summary
 from wxbot.report import build_report, to_markdown
@@ -177,6 +178,14 @@ def create_app(cfg, db: Database, runner=None, now=utcnow) -> FastAPI:
     @app.get("/export/report.md", response_class=PlainTextResponse, dependencies=deps)
     def report_md():
         return to_markdown(build_report(db, initial()))
+
+    @app.get("/api/research", dependencies=deps)
+    def research_report():
+        return research.build(db, initial())
+
+    @app.get("/export/research.md", response_class=PlainTextResponse, dependencies=deps)
+    def research_md():
+        return research.to_markdown(research.build(db, initial()))
 
     @app.get("/export/all.zip", dependencies=deps)
     def export_all():
