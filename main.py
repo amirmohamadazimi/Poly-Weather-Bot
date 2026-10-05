@@ -16,6 +16,7 @@
     python main.py climatology   # load --years of observed highs/lows for the climatology baseline
                                  #   (--if-missing: only when no history was loaded yet)
     python main.py report        # print the performance report
+    python main.py research      # print the experiment's research report: did it find positive EV?
     python main.py export DIR    # write every table as CSV (+ report.json) to DIR
 
 PAPER TRADING ONLY. No code in this project can place a real order.
@@ -45,7 +46,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("command", nargs="?", default="run",
                         choices=["run", "once", "worker", "web", "backtest", "backtest-markets", "calibrate",
-                                 "retrain", "rollback", "climatology", "report", "export"])
+                                 "retrain", "rollback", "climatology", "report", "research", "export"])
     parser.add_argument("path", nargs="?",
                         help="export: output directory; backtest-markets: also write the report as JSON here")
     parser.add_argument("--config", help="path to config.toml")
@@ -66,18 +67,22 @@ def main(argv: list[str] | None = None) -> int:
         # make_broker() refuses anything but paper; fail before touching anything else
         from wxbot.execution.paper import make_broker
         make_broker(cfg, None)  # type: ignore[arg-type]   # only checks the mode: raises before using a database
-    research = args.command == "backtest-markets"  # its own database, never an experiment's
-    url = cfg.backtest.database_url if research else cfg.app.database_url
+    own_db = args.command == "backtest-markets"  # its own database, never an experiment's
+    url = cfg.backtest.database_url if own_db else cfg.app.database_url
     db = Database(url)
     print(BANNER.format(mode=cfg.app.mode.upper(), initial=cfg.bankroll.initial, db=url.split("@")[-1]),
           file=sys.stderr)
-    if research:
+    if own_db:
         return backtest_markets(cfg, db, args)
 
     from wxbot.experiment import starting_bankroll
     if args.command == "report":
         from wxbot.report import build_report, to_markdown
         print(to_markdown(build_report(db, starting_bankroll(db, cfg))))
+        return 0
+    if args.command == "research":
+        from wxbot import research
+        print(research.to_markdown(research.build(db, starting_bankroll(db, cfg))))
         return 0
     if args.command == "export":
         from wxbot.export import export_to_dir

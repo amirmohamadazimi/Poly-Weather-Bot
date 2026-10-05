@@ -121,7 +121,8 @@ def group_stats(rows: list[dict]) -> dict:
     """Scores of one group of resolved predictions and the evidence of a weakness.
     bias: mean YES probability minus the share that resolved YES.
     confidence gap: mean probability of the side predicted minus how often that side happened.
-    vs market: mean Brier difference, model minus market, on markets with a price."""
+    vs market: mean Brier difference, model minus market, on markets with a price that passed the liquidity
+    check (metrics.market_yes)."""
     n = len(rows)
     ps, ys = [x["p_yes"] for x in rows], [x["y"] for x in rows]
     conf = [max(p, 1 - p) for p in ps]

@@ -82,10 +82,11 @@ def verdict(ov: dict, cal: dict) -> list[str]:
         gap = ov["win_rate"] - ov["expected_win_rate"]
         notes.append(f"Bets won {_pct(ov['win_rate'])} against {_pct(ov['expected_win_rate'])} predicted "
                      f"({'over' if gap >= 0 else 'under'}-performing by {abs(gap) * 100:.1f} points).")
-    if cal["brier_model"] is not None and cal["brier_market"] is not None:
-        better = cal["brier_model"] < cal["brier_market"]
-        notes.append(f"Across {cal['n_market']} resolved markets the model's Brier score {_num(cal['brier_model'])} "
-                     f"was {'better' if better else 'worse'} than the market's {_num(cal['brier_market'])}.")
+    if cal["brier_model_on_market"] is not None and cal["brier_market"] is not None:
+        better = cal["brier_model_on_market"] < cal["brier_market"]
+        notes.append(f"Across {cal['n_market']} resolved liquid markets the model's Brier score "
+                     f"{_num(cal['brier_model_on_market'])} was {'better' if better else 'worse'} than the market's "
+                     f"{_num(cal['brier_market'])}.")
     return notes
 
 
@@ -177,8 +178,9 @@ def to_markdown(rep: dict) -> str:
         f"| Brier on bets: model / market | {_num(ov['brier_bets'])} / {_num(ov['brier_market_on_bets'])} |",
         f"| Max drawdown | ${ov['max_drawdown']:.2f} ({_pct(ov['max_drawdown_pct'])}) |", "",
         "## Calibration of all predictions on resolved markets", "",
-        f"Markets: {cal['n']} · Brier model {_num(cal['brier_model'])} · market {_num(cal['brier_market'])} · "
-        f"log loss {_num(cal.get('log_loss_model'))} · expected calibration error {_num(cal.get('ece_model'))}", "",
+        f"Markets: {cal['n']} · Brier model {_num(cal['brier_model'])} · log loss {_num(cal.get('log_loss_model'))} · "
+        f"expected calibration error {_num(cal.get('ece_model'))} · on the {cal['n_market']} liquid markets, Brier "
+        f"model {_num(cal['brier_model_on_market'])} vs market {_num(cal['brier_market'])}", "",
         "| Predicted bin | n | Mean predicted | Observed |", "|---|---:|---:|---:|",
         *[f"| {b['bin']} | {b['n']} | {_pct(b['mean_pred'])} | {_pct(b['observed'])} |" for b in cal["bins"]],
     ]
@@ -220,8 +222,9 @@ def to_markdown(rep: dict) -> str:
         lines += ["", "## Model comparison", "",
                   f"Each model's prediction from the same cycle as the production model's last prediction made "
                   f"{comp['min_lead_days']}+ day ahead, on {comp['n_markets']} resolved markets. Each row is scored "
-                  "on the markets that model predicted, and the production columns on exactly those markets. "
-                  "Lower is better.", "",
+                  "on the markets that model predicted, and the production columns on exactly those markets; the "
+                  "market price only on markets that passed the liquidity check, since a thin market's mid is a "
+                  "placeholder. Lower is better.", "",
                   "| Model | Role | Markets | Brier | Log loss | Production Brier | Production log loss |",
                   "|---|---|---:|---:|---:|---:|---:|"]
         lines += [f"| {m['model']} | {m['role']} | {m['n']} | {_num(m['brier'])} | {_num(m['log_loss'])} | "

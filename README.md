@@ -43,7 +43,8 @@ Other commands:
 | `python main.py backtest [--days 90] [--stations EGLC,KLGA]` | Walk-forward forecast backtest, stores calibration |
 | `python main.py backtest-markets [report.json] [--days 14 \| --start D --end D] [--stations ...] [--offline]` | Replays closed markets at their historical prices in its own database; prints BACKTEST.md |
 | `python main.py calibrate` | Refit the probability calibrators now (each cycle refits once a day) |
-| `python main.py report` | End-of-experiment performance report (markdown) |
+| `python main.py report` | Performance report (markdown) |
+| `python main.py research` | Research report: did the experiment find positive EV, and is the evidence strong enough to believe it (markdown) |
 | `python main.py export [DIR]` | Every table as CSV plus `report.json` |
 
 The dashboard also has **Export everything (zip)**.
@@ -342,6 +343,25 @@ benchmark, log loss and expected calibration error, raw and calibrated, and
 the model comparison above. The report states plainly when
 there are too few settled bets to conclude anything.
 
+The model is compared with the market only on **liquid markets**: those
+whose market passed the bot's own liquidity check when it looked. A thin
+market's mid price is a placeholder of a near-empty book (0.34 or 0.40 on
+many lowest-temperature markets), and counting it made the model look better
+than the market when it was not.
+
+`python main.py research` (RESEARCH.md) answers the question an experiment is
+run for: did the strategy find positive expected value? Section 17's items
+are all in it (performance, predictions against the market, whether the edge
+was stable or rested on a few bets, market types, best and worst locations,
+the more predictable variable, over- and underconfidence, the largest errors,
+model versions, and how continuously the bot ran), and its verdict is
+SUPPORTED only when all five checks pass: 200+ settled bets, returns whose 95%
+interval (resampling whole market days) is above zero, a lower log loss than
+the market's on liquid markets (resampling whole events), bets that won about
+as often as predicted, and a profit that survives dropping the five best bets
+and holds in both halves. A positive P/L alone is never enough. It is interim
+while the experiment runs, preliminary until its last bets settle, then final.
+
 The dashboard (`python main.py web`, http://localhost:8000) has seven tabs:
 
 * **Overview:** starting bankroll, current equity, P/L, ROI and active positions, then cash, realized and unrealized P/L, win rate against the predicted win rate, drawdown.
@@ -443,7 +463,7 @@ The scheduled workflow runs experiment 1 from the frozen `exp1-frozen`
 branch, not from `main`; see [docs/experiments.md](docs/experiments.md).
 
 `.github/workflows/paper-trading-100.yml` runs experiment 2 ($100) the same
-way from the newest commit of `main` that passed CI ([docs/ci.md](docs/ci.md)), with its state on the `paper-data-100` branch and its runs
+way from the newest commit of `main` that passed CI ([docs/ci.md](docs/ci.md)), with its state, REPORT.md and RESEARCH.md on the `paper-data-100` branch and its runs
 offset from experiment 1's. Its first runs also load three years of observed
 highs and lows for the climatology baseline. GitHub fires scheduled runs about
 every 7–8 hours in practice, so the two experiments together use roughly 1,400

@@ -229,7 +229,8 @@ def _comparison_db(cfg):
         pid = _pred(db, mid, t1, "normal-multimodel-v1", "production", prod)
         _pred(db, mid, t1, "raw-forecast-v1", "shadow", raw)
         db.insert(signals, ts=t1, prediction_id=pid, market_id=mid, side="YES", model_prob=prod,
-                  market_prob={"A": 0.7, "B": 0.2}[mid], decision="NO_BET")
+                  market_prob={"A": 0.7, "B": 0.2}[mid], decision="NO_BET",
+                  rule_results=[{"rule": "liquidity", "passed": True, "value": 2500}])
         _pred(db, mid, t2, "normal-multimodel-v1", "production", 0.99, lead=0)  # same day: too late
     _pred(db, "A", t1, "climatology-v1", "shadow", 0.5)                 # climatology only predicted A
     return db
