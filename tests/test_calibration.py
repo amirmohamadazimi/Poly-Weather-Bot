@@ -2,7 +2,7 @@
 approval, and the engine using the calibrated probability."""
 import json
 import random
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -112,7 +112,7 @@ def _pred(db, mid, ts, p, role="production", version=MODEL, cal=None, cal_versio
 
 def test_day_end_is_local_midnight_after_the_target_day():
     end = day_end("EGLC", "2026-09-28")
-    assert end == datetime(2026, 9, 28, 23, 0, tzinfo=timezone.utc) and end.tzinfo == timezone.utc  # BST
+    assert end == datetime(2026, 9, 28, 23, 0, tzinfo=UTC) and end.tzinfo == UTC  # BST
 
 
 def test_training_set_uses_only_what_was_known_at_fit_time(cfg):
@@ -124,11 +124,11 @@ def test_training_set_uses_only_what_was_known_at_fit_time(cfg):
     _pred(db, "A", end - timedelta(hours=17), 0.95)                 # too close to the end of the day
     _pred(db, "A", end - timedelta(hours=19), 0.1, role="shadow", version="raw-forecast-v1")
     _pred(db, "A", end - timedelta(hours=19), 0.2, version="other-model-v1")
-    _market(db, "B", "2026-09-28", "NO", datetime(2026, 10, 5, tzinfo=timezone.utc))   # resolved after the fit
+    _market(db, "B", "2026-09-28", "NO", datetime(2026, 10, 5, tzinfo=UTC))   # resolved after the fit
     _pred(db, "B", end - timedelta(hours=19), 0.9)
     _market(db, "C", "2026-09-28", "NO", None)                     # never resolved
     _pred(db, "C", end - timedelta(hours=19), 0.9)
-    fit_time = datetime(2026, 10, 1, tzinfo=timezone.utc)
+    fit_time = datetime(2026, 10, 1, tzinfo=UTC)
     assert training_set(db, MODEL, fit_time, 18) == [(end - timedelta(hours=19), 0.7, 1)]
     assert training_set(db, MODEL, end + timedelta(hours=1), 18) == []   # A's result was not known yet
 
@@ -152,7 +152,7 @@ def _resolved_markets(db, n, truth, seed=1, start=date(2026, 8, 1)):
         conn.execute(markets.insert(), mk)
         conn.execute(market_resolutions.insert(), res)
         conn.execute(predictions.insert(), pr)
-    return datetime.combine(start + timedelta(days=n // 10 + 3), datetime.min.time(), timezone.utc)
+    return datetime.combine(start + timedelta(days=n // 10 + 3), datetime.min.time(), UTC)
 
 
 def overconfident(p):

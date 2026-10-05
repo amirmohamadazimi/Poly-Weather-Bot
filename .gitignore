@@ -5,3 +5,6 @@ __pycache__/
 /data/
 /exports/
 .env
+.coverage
+.coverage.*
+htmlcov/

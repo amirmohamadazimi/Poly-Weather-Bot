@@ -65,7 +65,7 @@ def main(argv: list[str] | None = None) -> int:
     if cfg.app.mode != "paper":
         # make_broker() refuses anything but paper; fail before touching anything else
         from wxbot.execution.paper import make_broker
-        make_broker(cfg, None)
+        make_broker(cfg, None)  # type: ignore[arg-type]   # only checks the mode: raises before using a database
     research = args.command == "backtest-markets"  # its own database, never an experiment's
     url = cfg.backtest.database_url if research else cfg.app.database_url
     db = Database(url)
@@ -101,9 +101,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "rollback":
         from wxbot.db import utcnow
         from wxbot.learning.retrain import manual_rollback
-        out = manual_rollback(db, utcnow())
-        print(json.dumps(out, indent=2))
-        return 1 if "error" in out else 0
+        result = manual_rollback(db, utcnow())
+        print(json.dumps(result, indent=2))
+        return 1 if "error" in result else 0
 
     if args.command == "web":  # read-only: no engine, so nothing is written to the database
         from wxbot.web.app import create_app
@@ -184,8 +184,8 @@ def backtest_markets(cfg, db: Database, args) -> int:
 
 def serve(cfg, app) -> None:
     import uvicorn
-    print(f"Dashboard: http://{'localhost' if cfg.app.host in ('127.0.0.1', '0.0.0.0') else cfg.app.host}:{cfg.app.port}",
-          file=sys.stderr)
+    host = "localhost" if cfg.app.host in ("127.0.0.1", "0.0.0.0") else cfg.app.host
+    print(f"Dashboard: http://{host}:{cfg.app.port}", file=sys.stderr)
     uvicorn.run(app, host=cfg.app.host, port=cfg.app.port, log_level=cfg.app.log_level.lower(), access_log=False)
 
 

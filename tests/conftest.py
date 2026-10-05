@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -14,7 +14,7 @@ from wxbot.execution.paper import make_broker
 from wxbot.model.registry import production_model, shadow_models
 from wxbot.strategy.sizing import make_sizer
 
-NOW = datetime(2026, 9, 27, 6, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 9, 27, 6, 0, tzinfo=UTC)
 
 # YES prices per bucket for "Highest temperature in London on September 28?"
 LONDON_PRICES = {
@@ -114,7 +114,8 @@ class FakePolymarket:
                     if market_id in self.resolved:
                         out["closed"] = True
                         out["closedTime"] = "2026-09-29 12:00:00+00"
-                        out["outcomePrices"] = json.dumps(["1", "0"] if self.resolved[market_id] == "YES" else ["0", "1"])
+                        won = self.resolved[market_id] == "YES"
+                        out["outcomePrices"] = json.dumps(["1", "0"] if won else ["0", "1"])
                     return out
         raise KeyError(market_id)
 

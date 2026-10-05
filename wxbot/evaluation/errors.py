@@ -19,6 +19,7 @@ from __future__ import annotations
 import math
 import statistics
 from collections import Counter, defaultdict
+from typing import Any
 
 from sqlalchemy import select
 
@@ -218,7 +219,8 @@ def bet_stats(rows: list[dict]) -> dict:
     if s["n"] >= MIN_BET_GROUP and z is not None and abs(z) >= FLAG_Z:
         s["flags"].append({"flag": "overconfident" if z > 0 else "underconfident", "weakness": z > 0, "z": z,
                            "detail": f"won {s['win_rate'] * 100:.0f}% of {s['n']} bets against "
-                                     f"{s['expected_win_rate'] * 100:.0f}% predicted; P/L {'-' if pnl < 0 else ''}${abs(pnl):,.2f}"})
+                                     f"{s['expected_win_rate'] * 100:.0f}% predicted; "
+                                     f"P/L {'-' if pnl < 0 else ''}${abs(pnl):,.2f}"})
     return s
 
 
@@ -230,27 +232,28 @@ def error_analysis(db: Database, min_lead_days: int = 1) -> dict:
         x["distance"] = bucket_distance(x["bucket_lo"], x["bucket_hi"], x["unit"], x["mu_c"], x["sigma_c"])
         x["class"] = classify(x["p_yes"], x["y"])
     leads = resolved_rows(db, per_lead=True)
-    dims = [{"key": "all", "title": "All resolved markets",
+    dims: list[dict[str, Any]] = [{"key": "all", "title": "All resolved markets",
              "groups": [{"group": "all", **group_stats(rows)}] if rows else []}]
     dims += [{"key": k, "title": t, "groups": _grouped(rows, f, group_stats)} for k, t, f in DIMENSIONS]
     dims.insert(2, {"key": "lead", "title": "Lead time (each market's last prediction at every lead)",
                     "groups": sorted(_grouped(leads, lambda x: lead_label(x["lead_days"]), group_stats),
                                      key=lambda g: (g["group"] == "unknown", g["group"] != "same day", g["group"]))})
     bets = settled_bets(db)
-    bet_dims = [{"key": "all", "title": "All settled bets", "groups": [{"group": "all", **bet_stats(bets)}]
-                 if bets else []}]
+    bet_dims: list[dict[str, Any]] = [{"key": "all", "title": "All settled bets",
+                                       "groups": [{"group": "all", **bet_stats(bets)}] if bets else []}]
     bet_dims += [{"key": k, "title": t, "groups": _grouped(bets, f, bet_stats)} for k, t, f in BET_DIMENSIONS]
 
     weaknesses = []
     for scope, ds in (("predictions", dims), ("bets", bet_dims)):
         overall = ds[0]["groups"][0] if ds[0]["groups"] else None
         same_as_all = {f["flag"] for f in overall["flags"]} if overall else set()
+        overall_n = overall["n"] if overall else 0
         for d in ds:
             for g in d["groups"]:
                 for f in g["flags"]:
                     # a group that is nearly the whole sample only repeats the overall flag
                     if f["weakness"] and not (d["key"] != "all" and f["flag"] in same_as_all
-                                              and g["n"] >= NEAR_ALL * overall["n"]):
+                                              and g["n"] >= NEAR_ALL * overall_n):
                         weaknesses.append({"scope": scope, "dimension": d["title"], "group": g["group"],
                                            "n": g["n"], **f})
     weaknesses.sort(key=lambda w: -abs(w["z"]))

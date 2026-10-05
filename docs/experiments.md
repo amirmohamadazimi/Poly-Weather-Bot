@@ -18,8 +18,9 @@
   starting bankroll and the name `exp2-100usd`.
 * Identity: the first run records the experiment in the `experiments` table
   (name, starting bankroll, start time, commit, settings), and REPORT.md names
-  it. Because it runs from `main`, merged improvements reach it; each run
-  records its commit, every change of code version is logged in
+  it. Because it runs from `main`, merged improvements reach it, but only once
+  their CI has passed: each run uses the newest commit of `main` on which the
+  `tests` workflow passed ([ci.md](ci.md)). Each run records its commit, every change of code version is logged in
   `system_events`, and the report shows the commit it started on and the one
   running now.
 * Learning (from v2 M9): once a week the cycle retrains the station bias and

@@ -1,11 +1,11 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
 from tests.conftest import london_event, unknown_event
 from wxbot.data.polymarket import Bucket, parse_bucket, parse_market, parse_station, parse_title, resolved_outcome
-from wxbot.data.weather import IEMObservations, daily_extreme, split_model_series
 from wxbot.data.stations import STATIONS
+from wxbot.data.weather import IEMObservations, daily_extreme, split_model_series
 
 
 @pytest.mark.parametrize("label,expected", [
@@ -24,12 +24,12 @@ def test_parse_bucket(label, expected):
 
 
 def test_parse_title_with_and_without_year():
-    end = datetime(2026, 9, 28, 12, tzinfo=timezone.utc)
+    end = datetime(2026, 9, 28, 12, tzinfo=UTC)
     assert parse_title("Highest temperature in London on September 28?", end) == ("high", "London", "2026-09-28")
     assert parse_title("Lowest temperature in NYC on January 2, 2027", end) == ("low", "NYC", "2027-01-02")
     # a late-December market listed in early January keeps the previous year
     assert parse_title("Highest temperature in Seoul on December 31?",
-                       datetime(2027, 1, 1, tzinfo=timezone.utc))[2] == "2026-12-31"
+                       datetime(2027, 1, 1, tzinfo=UTC))[2] == "2026-12-31"
     assert parse_title("Will it rain in London?", end) == (None, None, None)
 
 
@@ -86,6 +86,7 @@ def test_iem_csv_uses_local_day():
 
 def test_forecast_falls_back_to_one_request_per_model():
     import requests
+
     from wxbot.data.weather import OpenMeteoForecast
 
     times = [f"2026-09-28T{h:02d}:00" for h in range(24)]

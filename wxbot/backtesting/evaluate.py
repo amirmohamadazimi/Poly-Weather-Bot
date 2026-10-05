@@ -21,6 +21,7 @@ import math
 import random
 import statistics
 from collections import defaultdict
+from typing import Any
 
 from wxbot.evaluation.metrics import brier, calibration_bins, ece, log_loss, max_drawdown
 from wxbot.strategy import rules
@@ -75,8 +76,9 @@ def scores(rows: list[dict], cfg, n_boot: int = 2000) -> dict:
     ys = [r["outcome"] for r in common]
     probs = {name: [_clip(r[key], cfg) for r in common] for name, key in SOURCES}
     market = probs["market"]
-    out = {"n_rows": len(rows), "n_common": len(common), "n_markets": len({r["market_id"] for r in common}),
-           "n_events": len({r["event_id"] for r in common}), "sources": []}
+    out: dict[str, Any] = {"n_rows": len(rows), "n_common": len(common),
+                           "n_markets": len({r["market_id"] for r in common}),
+                           "n_events": len({r["event_id"] for r in common}), "sources": []}
     for name, key in SOURCES:
         p = probs[name]
         entry = {"source": name, "label": LABELS[name], "n_available": sum(r[key] is not None for r in rows),
@@ -142,6 +144,7 @@ def flat_stake(rows: list[dict], cfg, prob_key: str = "p_calibrated", half_sprea
         failed = rules.failed(rules.evaluate(_context(r, side, prob, entry, mid, cfg, 0.0, 1.0), cfg))
         pnl = None
         if not failed:
+            assert entry is not None   # the rules fail a market with no entry price
             held.add(r["market_id"])
             pnl = (1 / entry - 1) if _won(side, r["outcome"]) else -1.0
             bets.append({"event_id": r["event_id"], "side": side, "lead_days": r["lead_days"], "prob": prob,
@@ -208,6 +211,7 @@ def bankroll(rows: list[dict], cfg, prob_key: str = "p_calibrated") -> dict:
         ctx = _context(r, side, prob, entry, mid, cfg, pnl_by_day[r["decision_time"].date()], initial)
         if rules.failed(rules.evaluate(ctx, cfg)):
             continue
+        assert entry is not None   # the rules fail a market with no entry price
         exposure = sum(x[2]["stake"] for x in open_heap)
         equity = cash + exposure
         day = (r["station"], r["local_date"])
