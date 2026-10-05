@@ -11,7 +11,7 @@ stages, so that a commit never deploys an untested model.
 
 | Job | What it checks |
 |---|---|
-| `lint` | `ruff check .` with the rules in `pyproject.toml` (pycodestyle, pyflakes, bugbear, pyupgrade); also fails if `uv.lock` no longer matches `pyproject.toml` |
+| `lint` | `ruff check .` with the rules in `pyproject.toml` (pycodestyle, pyflakes, bugbear, pyupgrade) and `shellcheck` on the deploy scripts; also fails if `uv.lock` no longer matches `pyproject.toml` |
 | `types` | `mypy` on `wxbot/` and `main.py` |
 | `pytest` | the offline test suite with coverage; fails below the floor in `pyproject.toml` (90%) and writes the coverage table to the run's summary page |
 | `build` | a plain `pip install -r requirements.txt` (what the Docker image and the Actions experiments install), every module compiles and imports, and the app starts on a fresh database in paper mode |
@@ -30,7 +30,7 @@ Run the same checks locally with `uv sync && uv run ruff check . && uv run mypy
 | Development | a branch and its pull request | the checks above on every push |
 | Testing | `tests.yml` and `docker.yml` | lint, types, tests, build, image |
 | Staging | `main` | a merged commit waits here until its CI passes. Before merging a model change, `backtest-markets` can replay past markets with it on its own research database |
-| Production | the experiments | experiment 2 runs only the newest commit of `main` that passed CI; experiment 1 runs its frozen branch |
+| Production | the experiments and a server | experiment 2 and `deploy/update.sh` run only the newest commit of `main` that passed CI ([deploy.md](deploy.md)); experiment 1 runs its frozen branch |
 
 **Code.** `paper-trading-100.yml` asks GitHub for the newest push to `main`
 on which the whole `tests` workflow passed and checks out that commit. While a

@@ -451,30 +451,37 @@ of the 2,000 free minutes a month.
 
 ## Running on a server (Phase 2)
 
+[docs/deploy.md](docs/deploy.md) is the full guide. In short, on a Linux
+server with Docker:
+
 ```bash
-cp .env.example .env        # set a dashboard password
-docker compose up -d --build
-docker compose logs -f      # watch the first start
+sudo git clone https://github.com/amirmohamadazimi/Poly-Weather-Bot /opt/Poly-Weather-Bot
+cd /opt/Poly-Weather-Bot
+sudo cp .env.example .env               # set a dashboard password
+sudo deploy/update.sh                   # the newest commit of main that passed CI
+sudo cp deploy/wxbot.cron /etc/cron.d/wxbot   # follow main every hour, back up daily
 ```
 
-The first start takes roughly 10 to 15 minutes before the dashboard answers:
-like the Actions runs, it loads three years of observed highs and lows for the
-climatology baseline and fits the station bias/spread on 90 days of past
-forecasts. Later starts skip both (`--if-missing`). If the weather archives
-are unreachable it starts at once on the default spreads and tries again at the
-next start; `WXBOT_BOOTSTRAP=false` skips this setup.
+`deploy/update.sh` backs up the database, builds and starts the version, waits
+for its health check, and goes back to the previous version if the new one
+does not come up. The first start takes roughly 10 to 15 minutes: like the
+Actions runs, it loads three years of observed highs and lows and fits the
+station bias/spread before the dashboard starts (`docker compose logs -f`).
 
 * **Paper only.** Compose and the image both set `WXBOT_APP__MODE=paper`, which
   wins over `.env`; `.env` and the database are never copied into the image.
 * **Unprivileged.** The bot runs as user `wxbot` (uid 1000) and can write only
   `./data`, which holds the database and survives rebuilds.
+* **Private dashboard.** It is published on `127.0.0.1:8000`; reach it through
+  an SSH tunnel, or set `WXBOT_DASHBOARD_BIND=0.0.0.0` and a password.
 * **Unattended.** `restart: unless-stopped` brings it back after crashes and
   reboots, the health check calls `/healthz`, and the logs are capped at five
   10 MB files.
-* `docker compose run --rm wxbot report` prints the report, and any other
-  command (`retrain`, `rollback`, `export`) works the same way.
+* **Disk.** Each cycle stores about 7 MB, so the default 30-minute cycle grows
+  the database by roughly 10 GB a month; see the guide for sizing.
 
-Without Docker, `deploy/wxbot.service` is a systemd unit. Set
+On a computer of your own, `docker compose up -d --build` is enough.
+`deploy/wxbot.service` is a systemd unit for running without Docker. Set
 `WXBOT_APP__LOG_JSON=true` for one-JSON-object-per-line logs. To use
 PostgreSQL, install `psycopg[binary]` and set `WXBOT_APP__DATABASE_URL`.
 
@@ -520,6 +527,7 @@ Run the tests with `pip install -r requirements-dev.txt && pytest` (or `uv run p
 * [docs/database.md](docs/database.md): every table and what one row means
 * [docs/experiments.md](docs/experiments.md): running experiments and how to reproduce them
 * [docs/ci.md](docs/ci.md): the CI checks, and how only code that passed them reaches an experiment
+* [docs/deploy.md](docs/deploy.md): running on a server, updates, backups, moving experiment 2 off Actions
 * [docs/roadmap.md](docs/roadmap.md): v2 gap analysis and milestone plan
 
 ## Known limitations (v1)

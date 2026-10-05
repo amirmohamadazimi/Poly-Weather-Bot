@@ -34,7 +34,7 @@ Legend: **Have** = exists and is tested · **Partial** = exists but is missing w
 | 17 | 30-day $100 experiment | Partial | A $1,000 version is running on GitHub Actions; REPORT.md | The $100 run itself; report sections on log loss, segments, over- and under-confidence, largest errors, model versions and edge concentration |
 | 18 | Dashboard | Have | Overview (starting bankroll, equity, P/L, ROI, positions); live markets with current bid/ask, raw and calibrated probability, edge, EV and position; portfolio with mark value, payout, max loss and every risk limit's use; searchable bet history; charts of bankroll, P/L, drawdown, calibration (raw and calibrated), Brier, log loss, accuracy and model vs market; a Learning tab; system health with data-source status, database, model, calibrator and last refits (v2 M7) | No gap |
 | 19 | Notifications | Missing | None | An optional notifier interface (log/webhook/email) for the listed events |
-| 20 | Server deployment | Partial | Docker image that runs unprivileged, forces paper mode, keeps `.env` out, does the first-start setup and caps its logs; compose, systemd unit, env config; the actual runs are on GitHub Actions | A documented VPS deploy that pulls a tagged release |
+| 20 | Server deployment | Have | Docker image that runs unprivileged, forces paper mode and keeps `.env` out; `deploy/update.sh` deploys the newest commit of main that passed CI (or a named tag), backs up the database and rolls back an unhealthy version; hourly cron; VPS guide ([deploy.md](deploy.md)); systemd unit | No server is rented yet, so the experiments still run on GitHub Actions |
 | 21 | CI | Have | Lint (ruff), types (mypy on all of `wxbot`), tests with a 90% coverage floor, a clean-install build check and a Docker job on every PR; experiment 2 only runs commits of main that passed CI ([ci.md](ci.md)) | Automatic deploys to a server (M12) |
 | 22 | Observability | Partial | JSON logs; a system_events table with an event `code` (v2 M9: MODEL_RETRAINED, MODEL_DEPLOYED, MODEL_ROLLBACK, SIGNIFICANT_MODEL_ERROR, PAPER_BET_OPENED) | Codes on the remaining events (DATA_UPDATE, MARKET_DISCOVERED, MARKET_RESOLVED, PAPER_BET_SETTLED, …) |
 | 23 | Failure handling | Partial | Timeouts; retries with backoff incl. 429; stale-forecast and model-count rules; /healthz | Response caching; a validation stage that blocks bets on corrupt data |
@@ -58,7 +58,7 @@ Legend: **Have** = exists and is tested · **Partial** = exists but is missing w
 | 9 | Error analysis and learning | Have | Done on `v2-m9-learning`: learning ledger with error classes, versioned bias/spread sets, weekly retrain with out-of-sample approval, automatic and manual rollback |
 | 10 | Docker | Have | Non-root image forced to paper mode, first-start setup, log caps, and a CI job that starts it |
 | 11 | CI and tests | Have | ruff, mypy, coverage floor, build check, and the CI gate on experiment 2 ([ci.md](ci.md)) |
-| 12 | Server deployment | Partial | VPS guide plus tagged-release deploy; the Actions runner stays the default since there's no server |
+| 12 | Server deployment | Have | `deploy/update.sh`, backups, cron, VPS guide ([deploy.md](deploy.md)); the experiments stay on Actions until there is a server |
 | 13 | 30-day experiment | Partial | `paper-trading-100.yml` runs the $100 experiment from main (state on `paper-data-100`); running since 2026-10-01 21:48 UTC |
 | 14 | Research report | Partial | Full end-of-experiment report from section 17 |
 
