@@ -18,6 +18,7 @@ log = logging.getLogger("wxbot.migrations")
 
 # (table, column, type), in the order they were introduced
 ADDED_COLUMNS: list[tuple[str, str, TypeEngine]] = [
+    ("experiments", "planned_days", Integer()),                      # v2 M13
     ("forecast_snapshots", "issue_time", DateTime(timezone=True)),   # v2 M2
     ("forecast_snapshots", "quality", JSON()),                       # v2 M2
     ("markets", "outcomes", JSON()),                                 # v2 M3

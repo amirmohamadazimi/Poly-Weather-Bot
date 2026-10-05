@@ -297,6 +297,7 @@ experiments = Table(  # what this database is: one experiment per database
     Column("git_ref", String(80)),                    # WXBOT_GIT_REF or GITHUB_SHA when the row was created
     Column("config", JSON),                           # settings at the start, secrets removed
     _ts("created_at"),
+    Column("planned_days", Integer),                  # experiment.days when first set; NULL = no end (v2 M13)
 )
 
 calibration_params = Table(

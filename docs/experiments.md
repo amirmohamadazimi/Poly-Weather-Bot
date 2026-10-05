@@ -20,9 +20,20 @@
   (name, starting bankroll, start time, commit, settings), and REPORT.md names
   it. Because it runs from `main`, merged improvements reach it, but only once
   their CI has passed: each run uses the newest commit of `main` on which the
-  `tests` workflow passed ([ci.md](ci.md)). Each run records its commit, every change of code version is logged in
-  `system_events`, and the report shows the commit it started on and the one
-  running now.
+  `tests` workflow passed ([ci.md](ci.md)). Each run records its commit,
+  every change of code version is logged in `system_events`, and the report
+  shows the commit it started on and the one running now.
+* Length (from v2 M13): 30 days from its start at 2026-10-01 21:48 UTC, so it
+  stops opening bets at **2026-10-31 21:48 UTC**. The workflow pins
+  `WXBOT_EXPERIMENT__DAYS=30`, and the length is stored with the experiment the
+  first time, so no later setting can move the end. After it, every signal
+  fails the `experiment_open` rule; the runs go on settling the open bets,
+  then log `EXPERIMENT_COMPLETE`. REPORT.md and the dashboard show the day
+  ("day 4 of 30"), and then "ended" and "complete".
+* Operation: REPORT.md's "Operation" section counts the cycles, the median and
+  longest gap between them, finished days with none, and the errors logged.
+  GitHub fires the 3-hourly schedule late: the first three days had 13 cycles,
+  a median of 5.3 hours apart, the longest gap 8.9 hours.
 * Learning (from v2 M9): once a week the cycle retrains the station bias and
   spread and deploys a new set only if it beats the one in use on markets it
   was not fitted on; a deployed set that then does worse is rolled back. Every
