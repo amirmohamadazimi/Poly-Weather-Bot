@@ -1,15 +1,77 @@
+# CI (v2 M11): every pull request and every push to main runs lint, type
+# checks, the tests with coverage, and a clean-install build check. The Docker
+# image has its own workflow (docker.yml).
+#
+# The $100 experiment only ever runs a commit of main on which this whole
+# workflow passed (paper-trading-100.yml), so a merge cannot put untested code
+# into production. Keep this file's name: that workflow looks it up by name.
 name: tests
+
 on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.11"
+      - name: Install the locked dev environment (fails if uv.lock is out of date)
+        run: uv sync --locked
+      - name: ruff
+        run: uv run ruff check --output-format=github .
+
+  types:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.11"
+      - run: uv sync --locked
+      - name: mypy
+        run: uv run mypy
+
   pytest:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.11"
+      - run: uv sync --locked
+      - name: Tests with coverage (offline; fails below the floor in pyproject.toml)
+        run: uv run pytest -q --cov --cov-report=term --cov-report=markdown-append:"$GITHUB_STEP_SUMMARY"
+
+  build:
+    # the plain pip install the Docker image and the Actions experiments use
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: pip install -r requirements-dev.txt
-      - run: pytest -q
+      - run: pip install -r requirements.txt
+      - name: Everything compiles and imports
+        run: |
+          python -m compileall -q wxbot main.py
+          python -c "import wxbot.engine, wxbot.runner, wxbot.web.app, wxbot.backtesting, wxbot.learning"
+      - name: The app starts on a fresh database, in paper mode
+        env:
+          WXBOT_APP__DATABASE_URL: sqlite:////tmp/ci/wxbot.sqlite3
+        run: |
+          mkdir -p /tmp/ci
+          python main.py report | tee report.md
+          grep -q "PAPER TRADING" report.md

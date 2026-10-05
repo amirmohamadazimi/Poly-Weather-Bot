@@ -13,7 +13,6 @@ import statistics
 from wxbot.data.polymarket import Bucket
 from wxbot.model.base import Calibration, Prediction
 
-
 MIN_SIGMA_C = 0.3
 
 

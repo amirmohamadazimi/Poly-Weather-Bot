@@ -106,7 +106,12 @@ def collect_price_histories(db: Database, pm, start: date, end: date, stations: 
     for i, m in enumerate(todo):
         if i and i % 250 == 0:
             log.info("price histories: %d of %d", i, len(todo))
-        close = parse_time(m["closed_time"]) or day_end(m["station"], m["local_date"]) + timedelta(days=2)
+        close = parse_time(m["closed_time"])
+        if close is None:
+            end_of_day = day_end(m["station"], m["local_date"])
+            if end_of_day is None:   # unknown station: nothing to fetch it for
+                continue
+            close = end_of_day + timedelta(days=2)
         opened = parse_time(m["pm_created_at"]) or close - timedelta(days=5)
         try:
             series = pm.get_price_history(m["yes_token"], opened - timedelta(hours=1), close)
@@ -145,7 +150,7 @@ def collect_forecasts(cfg, db: Database, forecaster, codes: list[str], start: da
     leads = [int(x) for x in b.leads]
     lo = start - timedelta(days=int(b.train_days) + max(leads) + 1)
     hf = historical_forecasts.c
-    out = {}
+    out: dict[str, int | str] = {}
     for code in codes:
         have = {(r["kind"], r["lead_days"], r["local_date"], r["model"]) for r in db.rows(
             select(hf.kind, hf.lead_days, hf.local_date, hf.model).where(
@@ -184,7 +189,7 @@ def collect_observations(cfg, db: Database, observer, codes: list[str], start: d
     if years:
         first = min(first, start - timedelta(days=365 * years + int(cfg.model.get("climatology_window_days", 7)) + 1))
     wo = weather_observations.c
-    out = {}
+    out: dict[str, dict] = {}
     for code in codes:
         stored, failed, skipped = 0, 0, 0
         hi = end

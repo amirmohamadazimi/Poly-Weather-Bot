@@ -96,6 +96,7 @@ def ensure_experiment(db: Database, cfg, now: datetime, env=None) -> dict:
                   started_at=(first or {}).get("t") or now, git_ref=git_ref(env), config=redact(cfg.as_dict()),
                   created_at=now)
         row = current(db)
+        assert row is not None   # inserted just above
         db.log_event("INFO", "experiment", f"experiment '{row['name']}' recorded: ${initial:,.2f} starting bankroll")
     record_code_version(db, env)
     return row

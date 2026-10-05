@@ -1,5 +1,5 @@
 """v2 M3: resolution criteria, market fields, price history, migrations."""
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -7,11 +7,11 @@ import requests
 from fastapi.testclient import TestClient
 from sqlalchemy import inspect, select, text, update
 
-from tests.conftest import NOAA_EGLC, FakePolymarket, london_event, make_engine, market_description, unknown_event
+from tests.conftest import NOAA_EGLC, FakePolymarket, london_event, make_engine, market_description
 from wxbot.data.polymarket import CRITERIA_SKIP, PolymarketClient, check_criteria, parse_criteria, parse_market
 from wxbot.db import (
-    Database, market_criteria_history, market_price_history, market_resolutions, market_snapshots, markets,
-    paper_bets, system_events,
+    Database, market_criteria_history, market_price_history, market_resolutions, market_snapshots, markets, paper_bets,
+    system_events,
 )
 from wxbot.engine import PRICE_HISTORY_TRIES
 from wxbot.web.app import create_app
@@ -152,7 +152,7 @@ def test_client_reads_prices_history():
             return Resp()
 
     s = Session()
-    start, end = datetime(2026, 9, 26, tzinfo=timezone.utc), datetime(2026, 9, 29, tzinfo=timezone.utc)
+    start, end = datetime(2026, 9, 26, tzinfo=UTC), datetime(2026, 9, 29, tzinfo=UTC)
     out = PolymarketClient(session=s).get_price_history("tok", start, end)
     assert s.url.endswith("/prices-history") and s.params["market"] == "tok" and s.params["fidelity"] == 60
     assert s.params["startTs"] == int(start.timestamp()) and s.params["endTs"] == int(end.timestamp())
@@ -344,7 +344,7 @@ def test_price_history_keeps_only_price_changes_until_close(cfg):
     eng = make_engine(cfg)
     eng.run_cycle()
     _resolve(eng, TAIL_MARKET)
-    t0 = datetime(2026, 9, 27, tzinfo=timezone.utc)
+    t0 = datetime(2026, 9, 27, tzinfo=UTC)
     prices = [0.10, 0.10, 0.12, 0.12, 0.12, 0.05, 0.05]
     eng.pm.history_series["y" + TAIL_MARKET] = [(t0 + timedelta(hours=h), p) for h, p in enumerate(prices)]
     eng.clock.now += timedelta(days=1)         # well after the close
@@ -352,7 +352,7 @@ def test_price_history_keeps_only_price_changes_until_close(cfg):
     rows = eng.db.rows(select(market_price_history).order_by(market_price_history.c.t))
     assert [(r["t"].hour, r["price"]) for r in rows] == [(0, 0.10), (2, 0.12), (5, 0.05), (6, 0.05)]
     _, _, end = eng.pm.history_requests[0]
-    assert end == datetime(2026, 9, 29, 12, tzinfo=timezone.utc)   # the market's close, not now
+    assert end == datetime(2026, 9, 29, 12, tzinfo=UTC)   # the market's close, not now
 
 
 def test_dashboard_lists_markets_whose_title_did_not_parse(cfg):

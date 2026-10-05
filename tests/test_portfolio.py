@@ -77,7 +77,8 @@ def test_open_positions_are_marked_to_market(cfg):
     eng.clock.now += timedelta(minutes=30)
     eng.collect_markets()
     ov = overview(eng.db, 100)
-    assert ov["market_value"] == pytest.approx(SHARES * 0.97) and ov["unrealized_pnl"] == pytest.approx(SHARES * 0.97 - 2)
+    assert ov["market_value"] == pytest.approx(SHARES * 0.97)
+    assert ov["unrealized_pnl"] == pytest.approx(SHARES * 0.97 - 2)
     assert ov["equity"] == pytest.approx(98 + SHARES * 0.97) and ov["total_pnl"] == pytest.approx(SHARES * 0.97 - 2)
     assert ov["n_open_positions"] == 1 and ov["marked_by"] == {"bid": 1, "price": 0, "cost": 0}
     pos = ov["positions"][0]
@@ -220,7 +221,8 @@ def test_first_start_records_the_experiment(cfg, monkeypatch):
     assert exp["config"]["app"]["dashboard_password"] == "<redacted>" and "hunter2" not in json.dumps(exp["config"])
     eng.run_cycle()
     md = to_markdown(build_report(eng.db, 100))
-    assert "Experiment: **paper-100** · started 2026-09-27 06:00 UTC · starting bankroll $100.00 · code abc123def456" in md
+    assert ("Experiment: **paper-100** · started 2026-09-27 06:00 UTC · starting bankroll $100.00 · "
+            "code abc123def456") in md
 
 
 def test_a_different_bankroll_on_the_same_database_is_refused(cfg):

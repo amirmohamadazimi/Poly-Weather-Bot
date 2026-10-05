@@ -25,7 +25,7 @@ from __future__ import annotations
 import math
 import random
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, select
@@ -58,7 +58,7 @@ def identity() -> Calibrator:
 
 
 def _utc(t: datetime) -> datetime:
-    return t if t.tzinfo else t.replace(tzinfo=timezone.utc)
+    return t if t.tzinfo else t.replace(tzinfo=UTC)
 
 
 def day_end(station: str, local_date: str) -> datetime | None:
@@ -67,7 +67,7 @@ def day_end(station: str, local_date: str) -> datetime | None:
     if st is None or not local_date:
         return None
     end = datetime.combine(date.fromisoformat(local_date) + timedelta(days=1), datetime.min.time(), ZoneInfo(st.tz))
-    return end.astimezone(timezone.utc)
+    return end.astimezone(UTC)
 
 
 def training_set(db: Database, model_version: str, fit_time: datetime, min_lead_hours: float,

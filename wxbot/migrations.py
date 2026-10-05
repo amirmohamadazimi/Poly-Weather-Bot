@@ -12,11 +12,12 @@ import logging
 
 from sqlalchemy import JSON, DateTime, Engine, Float, Integer, String, func, inspect, select, text, update
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.types import TypeEngine
 
 log = logging.getLogger("wxbot.migrations")
 
 # (table, column, type), in the order they were introduced
-ADDED_COLUMNS = [
+ADDED_COLUMNS: list[tuple[str, str, TypeEngine]] = [
     ("forecast_snapshots", "issue_time", DateTime(timezone=True)),   # v2 M2
     ("forecast_snapshots", "quality", JSON()),                       # v2 M2
     ("markets", "outcomes", JSON()),                                 # v2 M3
@@ -64,7 +65,7 @@ def adopt_legacy_params(engine: Engine) -> str | None:
     set. They become the first production set, marked legacy: predictions and
     calibrators stored before M9 (no params_version) belong to it. Runs only
     while no param set exists, so it never touches a database already on M9."""
-    from wxbot.db import calibration_params, param_sets   # wxbot.db imports this module when it opens a database
+    from wxbot.db import calibration_params, param_sets  # wxbot.db imports this module when it opens a database
     cp = calibration_params.c
     try:
         with engine.begin() as conn:
@@ -73,13 +74,13 @@ def adopt_legacy_params(engine: Engine) -> str | None:
             rows = conn.execute(select(func.count().label("n"), func.min(cp.fitted_at).label("first"),
                                        func.max(cp.fitted_at).label("last"), func.min(cp.window_start).label("start"),
                                        func.max(cp.window_end).label("end")).where(cp.param_set_id.is_(None))).first()
-            if not rows.n:
+            if rows is None or not rows.n:
                 return None
             version = f"bias-sigma-{rows.last:%Y%m%d}-initial"
             set_id = conn.execute(param_sets.insert().values(
                 version=version, created_at=rows.first, origin="legacy", status="production", train_from=rows.start,
                 train_to=rows.end, n_rows=rows.n, n_carried=0, approved=True, deployed_at=rows.first, legacy=True,
-                reason="fitted by `backtest` before versioned parameter sets existed")).inserted_primary_key[0]
+                reason="fitted by `backtest` before versioned parameter sets existed")).inserted_primary_key[0]  # type: ignore[index]
             conn.execute(update(calibration_params).where(cp.param_set_id.is_(None)).values(param_set_id=set_id))
     except IntegrityError:   # another process starting at the same moment adopted them first
         return None

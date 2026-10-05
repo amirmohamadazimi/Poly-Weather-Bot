@@ -11,7 +11,7 @@ and without a snapshot the position stays at cost; `marked_by` says which.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import func, select
 
@@ -105,19 +105,19 @@ def open_positions(db: Database) -> list[Position]:
 
 def bankroll(db: Database, initial: float) -> Bankroll:
     pb = paper_bets.c
-    row = db.one(select(
+    row = db.agg(select(
         func.coalesce(func.sum(pb.stake), 0.0).label("staked"),
         func.coalesce(func.sum(pb.payout), 0.0).label("paid"),
         func.coalesce(func.sum(pb.pnl), 0.0).label("pnl"),
     ))
-    open_row = db.one(select(func.coalesce(func.sum(pb.stake), 0.0).label("open")).where(pb.status == "OPEN"))
+    open_row = db.agg(select(func.coalesce(func.sum(pb.stake), 0.0).label("open")).where(pb.status == "OPEN"))
     return Bankroll(initial=initial, cash=initial - row["staked"] + row["paid"],
                     open_exposure=open_row["open"], realized_pnl=row["pnl"], positions=open_positions(db))
 
 
 def event_exposure(db: Database, event_id: str) -> float:
     pb = paper_bets.c
-    row = db.one(select(func.coalesce(func.sum(pb.stake), 0.0).label("x"))
+    row = db.agg(select(func.coalesce(func.sum(pb.stake), 0.0).label("x"))
                  .where(pb.status == "OPEN", pb.event_id == event_id))
     return row["x"]
 
@@ -128,7 +128,7 @@ def station_day_exposure(db: Database, station: str | None, local_date: str | No
     if not station or not local_date:
         return 0.0
     pb, mk = paper_bets.c, markets.c
-    row = db.one(select(func.coalesce(func.sum(pb.stake), 0.0).label("x"))
+    row = db.agg(select(func.coalesce(func.sum(pb.stake), 0.0).label("x"))
                  .join(markets, mk.id == pb.market_id)
                  .where(pb.status == "OPEN", mk.station == station, mk.local_date == local_date))
     return row["x"]
@@ -141,9 +141,9 @@ def has_open_position(db: Database, market_id: str) -> bool:
 
 def daily_realized_pnl(db: Database, now: datetime | None = None) -> float:
     now = now or utcnow()
-    start = now.astimezone(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    start = now.astimezone(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
     pb = paper_bets.c
-    row = db.one(select(func.coalesce(func.sum(pb.pnl), 0.0).label("x")).where(pb.settled_at >= start))
+    row = db.agg(select(func.coalesce(func.sum(pb.pnl), 0.0).label("x")).where(pb.settled_at >= start))
     return row["x"]
 
 

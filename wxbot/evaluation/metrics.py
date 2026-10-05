@@ -5,6 +5,7 @@ import math
 import random
 import statistics
 from collections import defaultdict
+from typing import Any
 
 from sqlalchemy import and_, func, or_, select
 
@@ -54,7 +55,7 @@ def ece(probs: list[float], outcomes: list[int], n_bins: int = 10) -> float | No
 
 
 def calibration_bins(probs: list[float], outcomes: list[int], n_bins: int = 10) -> list[dict]:
-    bins = [[] for _ in range(n_bins)]
+    bins: list[list[tuple[float, int]]] = [[] for _ in range(n_bins)]
     for p, o in zip(probs, outcomes):
         bins[min(int(p * n_bins), n_bins - 1)].append((p, o))
     out = []
@@ -148,7 +149,7 @@ def portfolio_view(db: Database, cfg, now, initial: float) -> dict:
         select(b.id, b.opened_at, b.event_id, b.confidence, b.model_prob, b.market_prob, b.edge, mk.question,
                mk.event_title, mk.bucket_label, mk.city, mk.station, mk.local_date, mk.kind)
         .join(markets, mk.id == b.market_id).where(b.status == "OPEN"))}
-    positions = []
+    positions: list[dict[str, Any]] = []
     for p in bank.positions:
         r = info.get(p.bet_id, {})
         conf = r.get("confidence") if r.get("confidence") is not None else r.get("model_prob")
@@ -298,7 +299,7 @@ def daily_scores(rows: list[dict]) -> list[dict]:
         for x in xs:
             events[x["event_id"]].append(x)
         whole = [ev for ev in events.values() if len(ev) >= 2 and sum(x["y"] for x in ev) == 1]
-        top = lambda ev, k: max(ev, key=lambda x: x[k])["y"]  # noqa: E731
+        top = lambda ev, k: max(ev, key=lambda r: r[k])["y"]  # noqa: E731
         out.append({
             "day": day, "n": len(xs),
             "brier_model": brier([x["p_yes"] for x in xs], ys), "brier_used": brier([x["used"] for x in xs], ys),
@@ -402,4 +403,4 @@ def latest_calibrators(db: Database) -> list[dict]:
 
 
 def market_count(db: Database) -> int:
-    return db.one(select(func.count().label("n")).select_from(markets).where(markets.c.tradeable.is_(True)))["n"]
+    return db.agg(select(func.count().label("n")).select_from(markets).where(markets.c.tradeable.is_(True)))["n"]

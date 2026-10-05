@@ -38,7 +38,7 @@ def data_summary(db: Database, start: date, end: date, stations: list[str] | Non
         window.append(mk.station.in_(stations))
 
     def count(*where) -> int:
-        return db.one(select(func.count().label("n")).select_from(markets).where(*window, *where))["n"]
+        return db.agg(select(func.count().label("n")).select_from(markets).where(*window, *where))["n"]
 
     reasons: dict[str, int] = {}
     for r in db.rows(select(mk.skip_reason, func.count().label("n")).where(*window, mk.tradeable.is_(False))
@@ -47,7 +47,7 @@ def data_summary(db: Database, start: date, end: date, stations: list[str] | Non
         reasons[key] = reasons.get(key, 0) + r["n"]
     has_prices = select(ph.market_id).where(ph.market_id == mk.id).exists()
     return {
-        "events": db.one(select(func.count(func.distinct(mk.event_id)).label("n")).where(*window))["n"],
+        "events": db.agg(select(func.count(func.distinct(mk.event_id)).label("n")).where(*window))["n"],
         "markets": count(),
         "not_tradeable": sum(reasons.values()),
         "not_tradeable_reasons": dict(sorted(reasons.items(), key=lambda kv: -kv[1])),
@@ -72,7 +72,10 @@ def run_market_backtest(cfg, db: Database, start: date, end: date, *, sources: t
               "offline": sources is None, "git_ref": git_ref(),
               "settings": redact({k: cfg.get(k).as_dict() for k in SETTINGS if cfg.get(k) is not None})}
     run_id = db.insert(backtest_runs, started_at=now, params=params)
-    collected = collect_data(cfg, db, *sources, start, end, stations, now) if sources else None
+    collected = None
+    if sources:
+        pm, forecaster, observer = sources
+        collected = collect_data(cfg, db, pm, forecaster, observer, start, end, stations, now)
     replayed = replay_rows(cfg, db, start, end, stations)
     rows = replayed["rows"]
     report = evaluate_rows(rows, cfg)

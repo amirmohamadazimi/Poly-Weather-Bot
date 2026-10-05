@@ -6,11 +6,12 @@ paper bet can be traced back to the exact data and rule results behind it.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+from typing import Any
 
 from sqlalchemy import (
-    JSON, Boolean, Column, DateTime, Float, ForeignKey, Integer, MetaData, String, Table, Text,
-    create_engine, event, insert, select, update,
+    JSON, Boolean, Column, DateTime, Float, ForeignKey, Integer, MetaData, String, Table, Text, create_engine, event,
+    insert, select, update,
 )
 from sqlalchemy.engine import Engine
 
@@ -18,7 +19,7 @@ metadata = MetaData()
 
 
 def utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _ts(name: str = "created_at", **kw) -> Column:
@@ -446,9 +447,17 @@ EXPORT_TABLES = [
 ]
 
 
+def inserted_id(result) -> int:
+    """The primary key of the row a single-row insert just wrote."""
+    pk = result.inserted_primary_key
+    if not pk:
+        raise LookupError("the insert returned no primary key")
+    return pk[0]
+
+
 class Database:
     def __init__(self, url: str):
-        kw = {"future": True}
+        kw: dict[str, Any] = {"future": True}
         if url.startswith("sqlite"):
             kw["connect_args"] = {"check_same_thread": False, "timeout": 30}
         self.engine: Engine = create_engine(url, **kw)
@@ -466,9 +475,7 @@ class Database:
     # -- tiny helpers -------------------------------------------------------
     def insert(self, table: Table, **values) -> int:
         with self.engine.begin() as conn:
-            res = conn.execute(insert(table).values(**values))
-            pk = res.inserted_primary_key
-            return pk[0] if pk else None
+            return inserted_id(conn.execute(insert(table).values(**values)))
 
     def rows(self, stmt) -> list[dict]:
         with self.engine.connect() as conn:
@@ -477,6 +484,13 @@ class Database:
     def one(self, stmt) -> dict | None:
         rows = self.rows(stmt)
         return rows[0] if rows else None
+
+    def agg(self, stmt) -> dict:
+        """The row of an aggregate query (count, sum, min), which always has one."""
+        row = self.one(stmt)
+        if row is None:
+            raise LookupError("an aggregate query returned no row")
+        return row
 
     def set_state(self, key: str, value) -> None:
         text = value if isinstance(value, str) else json.dumps(value, default=str)

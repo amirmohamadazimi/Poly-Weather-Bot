@@ -15,9 +15,7 @@ from datetime import datetime
 
 from sqlalchemy import select
 
-from wxbot.db import (
-    Database, market_resolutions, markets, paper_bets, prediction_outcomes, predictions, signals,
-)
+from wxbot.db import Database, market_resolutions, markets, paper_bets, prediction_outcomes, predictions, signals
 from wxbot.evaluation.errors import bucket_distance, classify
 from wxbot.evaluation.metrics import LOG_LOSS_EPS, decision_predictions
 from wxbot.learning import params

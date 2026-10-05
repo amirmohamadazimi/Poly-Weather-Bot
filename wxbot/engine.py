@@ -10,25 +10,25 @@ from __future__ import annotations
 
 import logging
 import time
+from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
-from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import requests
-from sqlalchemy import and_, desc, exists, func, or_, select, update
+from sqlalchemy import and_, desc, exists, func, select, update
 
 from wxbot.calibration.fit import active_calibrator, fit_round
 from wxbot.data.polymarket import Bucket, ParsedMarket, parse_time, price_changes, resolved_outcome
 from wxbot.data.stations import get_station
 from wxbot.data.validation import validate_forecast, validate_observation
 from wxbot.db import (
-    Database, forecast_snapshots, forecast_values, market_criteria_history, market_price_history,
-    market_snapshots, markets, paper_bets, predictions, signals, utcnow, weather_observations,
+    Database, forecast_snapshots, forecast_values, market_criteria_history, market_price_history, market_snapshots,
+    markets, paper_bets, predictions, signals, utcnow, weather_observations,
 )
 from wxbot.execution import portfolio
 from wxbot.execution.paper import BrokerRefused
 from wxbot.experiment import ensure_experiment
-from wxbot.features import FEATURE_SET, build_features, climatology_window, observed_history
+from wxbot.features import FEATURE_SET, Features, build_features, climatology_window, observed_history
 from wxbot.learning import learn, outcomes, retrain
 from wxbot.learning import params as param_sets
 from wxbot.model.base import Calibration
@@ -51,7 +51,7 @@ def _parse_time(value) -> datetime | None:
     if not value:
         return None
     t = value if isinstance(value, datetime) else datetime.fromisoformat(value)
-    return t if t.tzinfo else t.replace(tzinfo=timezone.utc)
+    return t if t.tzinfo else t.replace(tzinfo=UTC)
 
 
 VARIABLES = {"high": "temperature_2m_max", "low": "temperature_2m_min"}
@@ -153,7 +153,8 @@ class Engine:
                     resolution_source=old.resolution_source, criteria=old.criteria))
                 log.info("market %s: resolution text changed", pm.id)
             # a market we already saw close/resolve never re-opens
-            conn.execute(update(markets).where(mk.id == pm.id).values({**values, "closed": or_(mk.closed, pm.closed)}))
+            closed = True if pm.closed else mk.closed
+            conn.execute(update(markets).where(mk.id == pm.id).values({**values, "closed": closed}))
 
     def _open_tradeable_markets(self) -> list[dict]:
         rows = self.db.rows(select(markets).where(markets.c.tradeable.is_(True), markets.c.closed.is_(False)))
@@ -251,12 +252,12 @@ class Engine:
         params = self._params()
         calibrator = active_calibrator(self.db, self.cfg, self.predictor.version, now, params.ps)
         history: dict[tuple, dict] = {}     # observed values per (station, kind), read once per cycle
-        features: dict[tuple, object] = {}  # per (station, day, kind, forecast)
+        features: dict[tuple, Features] = {}  # per (station, day, kind, forecast)
         shadow_errors: dict[str, str] = {}
         for m in self._open_tradeable_markets():
             st = get_station(m["station"])
             fc = self._latest_forecast(m["station"], m["local_date"], m["kind"])
-            if fc is None:
+            if st is None or fc is None:
                 continue
             lead_days = (date.fromisoformat(m["local_date"]) - local_today(st.tz, now)).days
             calib = params.calibration(m["station"], m["kind"], lead_days)
@@ -271,7 +272,7 @@ class Engine:
             feats = features[key]
             pred = self.predictor.predict(bucket, m["kind"], values, lead_days, calib, feats)
             pred.inputs["data_quality"] = quality
-            fetched_at = fc["fetched_at"] if fc["fetched_at"].tzinfo else fc["fetched_at"].replace(tzinfo=timezone.utc)
+            fetched_at = fc["fetched_at"] if fc["fetched_at"].tzinfo else fc["fetched_at"].replace(tzinfo=UTC)
             pred.inputs["forecast_fetched_at"] = fetched_at.isoformat()
             pred.inputs["forecast_source"] = fc["source"]
             pred.inputs["features"] = feats.values
@@ -372,7 +373,7 @@ class Engine:
             budget = max(0.0, min(caps.values()))
             sizing = {"sizer": self.sizer.name, "equity": round(equity, 4), "cash": round(bank.cash, 4),
                       "open_exposure": round(bank.open_exposure, 4), "caps": {k: round(v, 4) for k, v in caps.items()},
-                      "binding_cap": min(caps, key=caps.get), "budget": round(budget, 4)}
+                      "binding_cap": min(caps, key=lambda k: caps[k]), "budget": round(budget, 4)}
             fill = rules.simulate_fill(asks, budget, s.slippage, s.fee_rate, cfg.sizing.max_book_share)
             ctx.entry_price = fill.avg_price if fill.shares else None
             ctx.stake = fill.total
@@ -396,6 +397,7 @@ class Engine:
             proposed_stake=ctx.stake, decision=decision,
             reason="all rules passed" if not bad else "failed: " + ", ".join(bad), rule_results=results_out)
         if decision == "BET":
+            assert fill is not None   # a bet passed the rules, so it was sized and filled
             try:
                 bet_id = self.broker.place(signal_id=sig_id, market=m, side=side, fill=fill, model_prob=raw_prob,
                                            market_prob=market_prob, edge=edge, ev=ev, confidence=model_prob,
@@ -510,7 +512,7 @@ class Engine:
         m = self.db.one(select(markets).where(markets.c.id == market_id))
         if not m or not m["yes_token"]:
             return 0
-        start = _parse_time(m["pm_created_at"]) or _parse_time(m["first_seen"]) - timedelta(days=3)
+        start = _parse_time(m["pm_created_at"]) or (_parse_time(m["first_seen"]) or now) - timedelta(days=3)
         end = min(_parse_time(m["closed_time"]) or now, now)
         series = self.pm.get_price_history(m["yes_token"], start, end)
         if not series:
@@ -525,14 +527,18 @@ class Engine:
     def maybe_collect_observations(self, force: bool = False) -> dict:
         now = self.clock()
         last = self.db.get_state("last_observation_update")
-        if not force and last and now - datetime.fromisoformat(last) < timedelta(hours=self.cfg.schedule.observation_hours):
+        every = timedelta(hours=self.cfg.schedule.observation_hours)
+        if not force and last and now - datetime.fromisoformat(last) < every:
             return {"skipped": True}
         mk = markets.c
         since = (now - timedelta(days=4)).date().isoformat()
-        codes = {r["station"] for r in self.db.rows(select(mk.station).where(mk.tradeable.is_(True), mk.local_date >= since))}
+        codes = {r["station"] for r in self.db.rows(
+            select(mk.station).where(mk.tradeable.is_(True), mk.local_date >= since))}
         stored = 0
         for code in sorted(codes):
             st = get_station(code)
+            if st is None:
+                continue
             end = local_today(st.tz, now) - timedelta(days=1)
             try:
                 obs = self.observer.fetch(st, end - timedelta(days=3), end)
@@ -556,8 +562,9 @@ class Engine:
                         self.db.log_event("WARNING", "validation", f"observation {code} {d} {kind} rejected: "
                                           f"{problem}", details={"value_c": value, "n_reports": n})
                     continue
-                prev = self.db.one(select(wo.value_c).where(wo.station == code, wo.local_date == d, wo.kind == kind,
-                                                            wo.source == self.observer.source).order_by(desc(wo.id)).limit(1))
+                prev = self.db.one(select(wo.value_c).where(
+                    wo.station == code, wo.local_date == d, wo.kind == kind, wo.source == self.observer.source,
+                ).order_by(desc(wo.id)).limit(1))
                 if prev is None or abs(prev["value_c"] - value) > 1e-6:
                     self.db.insert(weather_observations, station=code, local_date=d, kind=kind, value_c=value,
                                    n_reports=n, source=self.observer.source, fetched_at=self.clock())

@@ -1,6 +1,6 @@
 """v2 M4: feature set, baselines, model registry, shadow predictions, model comparison."""
 import json
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -63,7 +63,8 @@ def test_features_are_stored_with_every_prediction(cfg):
     assert prod and all(p["feature_set"] == FEATURE_SET for p in prod)
     f = prod[0]["inputs"]["features"]
     assert f["feature_set"] == FEATURE_SET and f["station"] == "EGLC" and f["kind"] == "high"
-    assert f["forecast_mean_c"] == 18.0 and f["n_models"] == 5 and f["forecast_spread_c"] == pytest.approx(0.245, abs=1e-3)
+    assert f["forecast_mean_c"] == 18.0 and f["n_models"] == 5
+    assert f["forecast_spread_c"] == pytest.approx(0.245, abs=1e-3)
     assert f["forecast_min_c"] == 17.6 and f["forecast_max_c"] == 18.3
     assert f["month"] == 9 and f["day_of_year"] == date(2026, 9, 28).timetuple().tm_yday and f["lead_days"] == 1
     # oldest run 2026-09-27 00Z to the end of 28 Sep in London (23:00Z)
@@ -185,15 +186,18 @@ def test_registry_retires_models_that_leave_the_config(cfg):
     roles = {v: r["role"] for v, r in _registry(eng.db).items()}
     assert roles == {"normal-multimodel-v1": "retired", "raw-forecast-v1": "shadow", "climatology-v1": "retired",
                      "normal-multimodel-v2": "production"}
-    msgs = [e["message"] for e in eng.db.rows(select(system_events).where(system_events.c.component == "model_registry"))]
-    assert "normal-multimodel-v1: production -> retired" in msgs and "normal-multimodel-v2 registered as production" in msgs
+    ev = system_events.c
+    msgs = [e["message"] for e in eng.db.rows(select(system_events).where(ev.component == "model_registry"))]
+    assert "normal-multimodel-v1: production -> retired" in msgs
+    assert "normal-multimodel-v2 registered as production" in msgs
 
 
 def test_registry_flags_changed_params_without_a_new_version(cfg):
     eng = make_engine(cfg)
     cfg._data["model"]["climatology_window_days"] = 10
     make_engine(cfg, db=eng.db)
-    msgs = [e["message"] for e in eng.db.rows(select(system_events).where(system_events.c.component == "model_registry"))]
+    ev = system_events.c
+    msgs = [e["message"] for e in eng.db.rows(select(system_events).where(ev.component == "model_registry"))]
     assert any(m.startswith("climatology-v1: params differ") for m in msgs)
 
 
@@ -256,7 +260,8 @@ def test_prediction_calibration_ignores_shadow_predictions(cfg):
 def test_comparison_is_in_the_report_and_api(cfg):
     db = _comparison_db(cfg)
     md = to_markdown(build_report(db, 1000))
-    assert "## Model comparison" in md and "| raw-forecast-v1 |" in md and "| market price (mid) | benchmark | 2 |" in md
+    assert "## Model comparison" in md and "| raw-forecast-v1 |" in md
+    assert "| market price (mid) | benchmark | 2 |" in md
     make_engine(cfg, db=db)
     api = TestClient(create_app(cfg, db))
     assert {m["model"] for m in api.get("/api/performance").json()["model_comparison"]["models"]} >= {

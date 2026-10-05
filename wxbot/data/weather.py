@@ -16,7 +16,7 @@ import io
 import logging
 import time
 from collections import defaultdict
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from typing import Protocol
 from zoneinfo import ZoneInfo
 
@@ -52,7 +52,7 @@ def fetch_hourly(session, url: str, params: dict, models: list[str]) -> tuple[di
             raise
         log.warning("%s rejected model list (%s); retrying per model", url, exc.response.text[:200])
     merged: dict = {}
-    data: dict = {}
+    data = {}
     for m in models:
         try:
             data = get_json(session, url, {**params, "models": m})
@@ -120,7 +120,7 @@ class OpenMeteoForecast:
                 try:
                     ts = get_json(self.session, OPEN_METEO_META.format(dataset=dataset)).get(
                         "last_run_initialisation_time")
-                    run = datetime.fromtimestamp(int(ts), timezone.utc).isoformat() if ts else None
+                    run = datetime.fromtimestamp(int(ts), UTC).isoformat() if ts else None
                 except Exception as exc:  # noqa: BLE001 - metadata is optional
                     log.warning("run time for %s unavailable: %s", m, exc)
             self._runs[m] = (time.monotonic(), run)
@@ -188,8 +188,9 @@ class IEMObservations:
     def fetch(self, station: Station, start: date, end: date) -> dict[str, dict[str, tuple[float, int]]]:
         """-> {kind: {local_date: (value_c, n_reports)}} for local days start..end."""
         tz = ZoneInfo(station.tz)
-        utc_start = datetime.combine(start, datetime.min.time(), tz).astimezone(timezone.utc) - timedelta(hours=1)
-        utc_end = datetime.combine(end + timedelta(days=1), datetime.min.time(), tz).astimezone(timezone.utc) + timedelta(hours=1)
+        utc_start = datetime.combine(start, datetime.min.time(), tz).astimezone(UTC) - timedelta(hours=1)
+        utc_end = (datetime.combine(end + timedelta(days=1), datetime.min.time(), tz).astimezone(UTC)
+                   + timedelta(hours=1))
         params = [
             ("station", self.iem_id(station.code)), ("data", "tmpf"),
             ("year1", utc_start.year), ("month1", utc_start.month), ("day1", utc_start.day),
@@ -212,7 +213,7 @@ class IEMObservations:
             if raw in ("", "M", "T"):
                 continue
             try:
-                ts = datetime.strptime(row["valid"], "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
+                ts = datetime.strptime(row["valid"], "%Y-%m-%d %H:%M").replace(tzinfo=UTC)
                 temp_c = (float(raw) - 32.0) * 5.0 / 9.0
             except (KeyError, ValueError):
                 continue

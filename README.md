@@ -443,7 +443,7 @@ The scheduled workflow runs experiment 1 from the frozen `exp1-frozen`
 branch, not from `main`; see [docs/experiments.md](docs/experiments.md).
 
 `.github/workflows/paper-trading-100.yml` runs experiment 2 ($100) the same
-way from `main`, with its state on the `paper-data-100` branch and its runs
+way from the newest commit of `main` that passed CI ([docs/ci.md](docs/ci.md)), with its state on the `paper-data-100` branch and its runs
 offset from experiment 1's. Its first runs also load three years of observed
 highs and lows for the climatology baseline. GitHub fires scheduled runs about
 every 7–8 hours in practice, so the two experiments together use roughly 1,400
@@ -511,13 +511,15 @@ wxbot/web/                  dashboard (FastAPI + one HTML page)
 tests/                      offline tests (no network)
 ```
 
-Run the tests with `pip install -r requirements-dev.txt && pytest` (or `uv run pytest`).
+Run the tests with `pip install -r requirements-dev.txt && pytest` (or `uv run pytest`). CI also runs
+`ruff check .`, `mypy` and the tests with coverage on every pull request; see [docs/ci.md](docs/ci.md).
 
 ## Documentation
 
 * [docs/architecture.md](docs/architecture.md): the pipeline stages and where each lives
 * [docs/database.md](docs/database.md): every table and what one row means
 * [docs/experiments.md](docs/experiments.md): running experiments and how to reproduce them
+* [docs/ci.md](docs/ci.md): the CI checks, and how only code that passed them reaches an experiment
 * [docs/roadmap.md](docs/roadmap.md): v2 gap analysis and milestone plan
 
 ## Known limitations (v1)
