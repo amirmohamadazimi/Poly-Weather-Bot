@@ -1,8 +1,11 @@
-# docker compose up -d --build   (README "Running on a server")
+# docker compose up -d --build   (on a server: deploy/update.sh; see docs/deploy.md)
 # PAPER TRADING ONLY: app.mode is forced to "paper" below.
 services:
   wxbot:
-    build: .
+    build:
+      context: .
+      args:
+        WXBOT_GIT_REF: ${WXBOT_GIT_REF:-}   # the commit deploy/update.sh built, recorded with every run
     restart: unless-stopped          # comes back after crashes and reboots
     env_file:
       - path: .env
@@ -11,7 +14,9 @@ services:
       WXBOT_APP__HOST: 0.0.0.0
       WXBOT_APP__MODE: paper         # wins over .env
     ports:
-      - "8000:8000"
+      # only this machine can reach the dashboard unless .env sets WXBOT_DASHBOARD_BIND=0.0.0.0
+      # (then set WXBOT_APP__DASHBOARD_PASSWORD too)
+      - "${WXBOT_DASHBOARD_BIND:-127.0.0.1}:8000:8000"
     volumes:
       - ./data:/app/data             # SQLite database survives rebuilds
     logging:                         # keep weeks of unattended logs from filling the disk

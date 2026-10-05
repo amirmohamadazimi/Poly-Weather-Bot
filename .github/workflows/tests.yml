@@ -29,6 +29,8 @@ jobs:
         run: uv sync --locked
       - name: ruff
         run: uv run ruff check --output-format=github .
+      - name: shellcheck (the container entrypoint and the deploy scripts)
+        run: shellcheck deploy/*.sh
 
   types:
     runs-on: ubuntu-latest

@@ -15,5 +15,8 @@ EXPOSE 8000
 # bias/spread before the dashboard starts (deploy/docker-entrypoint.sh)
 HEALTHCHECK --interval=60s --timeout=5s --start-period=30m \
   CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz')"
+# the commit this image was built from (deploy/update.sh passes it), recorded with every run
+ARG WXBOT_GIT_REF=""
+ENV WXBOT_GIT_REF=${WXBOT_GIT_REF}
 ENTRYPOINT ["/app/deploy/docker-entrypoint.sh"]
 CMD ["run"]
