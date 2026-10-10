@@ -1,0 +1,23 @@
+{
+  "markets": {
+    "seen": 3102,
+    "tradeable": 1727
+  },
+  "forecasts": {
+    "stations": 27,
+    "snapshots": 148
+  },
+  "signals": {
+    "predictions": 1628,
+    "bets": 7
+  },
+  "settlement": {
+    "checked": 32,
+    "bets_settled": 1
+  },
+  "observations": {
+    "stations": 27,
+    "new_rows": 12
+  },
+  "seconds": 27.8
+}
