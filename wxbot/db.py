@@ -203,6 +203,32 @@ prob_calibrators = Table(  # every probability-calibrator fit; the newest round'
     Column("params_version", String(60)),              # fitted on (and applied to) this param set only (v2 M9)
 )
 
+market_anchors = Table(  # every market-anchor fit (wxbot/calibration/anchor.py); the newest one is in force
+    "market_anchors", metadata,
+    Column("id", Integer, primary_key=True),
+    Column("version", String(60), nullable=False),
+    Column("model_version", String(40), nullable=False, index=True),
+    Column("params_version", String(60)),              # fitted on (and applied to) this param set only
+    _ts("fitted_at"),
+    Column("n", Integer),                              # resolved markets with a tight book
+    Column("n_train", Integer),
+    Column("n_holdout", Integer),
+    Column("train_from", DateTime(timezone=True)),     # decision times covered
+    Column("train_to", DateTime(timezone=True)),
+    Column("holdout_from", DateTime(timezone=True)),
+    Column("holdout_to", DateTime(timezone=True)),
+    Column("params", JSON),                            # a (model), b (market), c
+    Column("brier_market", Float),                     # on the holdout: the market's mid price
+    Column("brier_model", Float),                      # the model alone
+    Column("brier_anchored", Float),                   # the anchor
+    Column("log_loss_market", Float),
+    Column("log_loss_model", Float),
+    Column("log_loss_anchored", Float),
+    Column("improvement_confidence", Float),           # share of holdout bootstrap resamples where it beats the market
+    Column("approved", Boolean, nullable=False),       # only an approved anchor lets the bot bet
+    Column("reason", Text),
+)
+
 model_versions = Table(  # model registry: every model version the bot has run, and its current role
     "model_versions", metadata,
     Column("id", Integer, primary_key=True),
@@ -444,7 +470,7 @@ EXPORT_TABLES = [
     "market_snapshots", "market_price_history", "market_criteria_history", "market_resolutions", "bankroll_snapshots",
     "weather_observations", "calibration_params", "backtest_runs", "model_versions", "prob_calibrators",
     "experiments", "system_events", "historical_forecasts", "backtest_predictions", "param_sets",
-    "prediction_outcomes",
+    "prediction_outcomes", "market_anchors",
 ]
 
 

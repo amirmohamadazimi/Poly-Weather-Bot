@@ -48,6 +48,12 @@
   answers whether the experiment found positive EV, with a verdict that needs
   five checks to pass, not a positive P/L. It is interim until the end,
   preliminary while the last bets settle, then final.
+* Market anchor (from the fix for the losses, after 2026-10-12): bets only while
+  the model combined with the market price beats the price alone on held-out
+  resolved markets (README "Market anchor"). On the data so far that has never
+  been the case, so from the run that picks this up the experiment places no
+  new bets until the model earns them; open bets still settle. REPORT.md says
+  so in its verdict and shows the latest fit.
 * State: `wxbot.sqlite3.gz`, `REPORT.md` and `RESEARCH.md` on the
   `paper-data-100` branch.
 

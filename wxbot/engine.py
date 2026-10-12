@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo
 import requests
 from sqlalchemy import and_, desc, exists, func, select, update
 
+from wxbot.calibration import anchor as market_anchor
 from wxbot.calibration.fit import active_calibrator, fit_round
 from wxbot.data.polymarket import Bucket, ParsedMarket, parse_time, price_changes, resolved_outcome
 from wxbot.data.stations import get_station
@@ -94,6 +95,7 @@ class Engine:
             ("markets", self.collect_markets),
             ("forecasts", self.collect_forecasts),
             ("calibration", self.maybe_fit_calibration),
+            ("market_anchor", self.maybe_fit_anchor),
             ("signals", self.predict_and_trade),
             ("settlement", self.settle),
             ("experiment", self.check_experiment),
@@ -246,12 +248,34 @@ class Engine:
                               "log_loss_after")} for r in rows})
         return {"n": rows[0]["n"] if rows else 0, "using": chosen}
 
+    def maybe_fit_anchor(self, force: bool = False) -> dict:
+        """Refit the market anchor at most every refit_hours (DB only, no
+        network); see wxbot/calibration/anchor.py for the approval rule."""
+        c = self.cfg.get("market_anchor")
+        if not c or not c.enabled:
+            return {"enabled": False}
+        now = self.clock()
+        last = self.db.get_state("last_anchor_fit")
+        if not force and last and now - datetime.fromisoformat(last) < timedelta(hours=float(c.refit_hours)):
+            return {"skipped": True}
+        row = market_anchor.fit_round(self.db, self.cfg, self.predictor.version, now, param_sets.production(self.db))
+        self.db.set_state("last_anchor_fit", now.isoformat())
+        self.db.log_event("INFO", "market_anchor", f"fit on {row['n']} resolved markets with a tight book: "
+                          f"{'approved' if row['approved'] else 'not approved'} ({row['reason']})",
+                          details={k: row[k] for k in ("params", "brier_market", "brier_anchored", "log_loss_market",
+                                                       "log_loss_model", "log_loss_anchored",
+                                                       "improvement_confidence", "approved")})
+        return {"n": row["n"], "approved": row["approved"]}
+
     # -- 4. predictions, signals, paper bets ---------------------------------
     def predict_and_trade(self) -> dict:
         now = self.clock()
         n_pred = n_shadow = n_bets = 0
         params = self._params()
         calibrator = active_calibrator(self.db, self.cfg, self.predictor.version, now, params.ps)
+        c = self.cfg.get("market_anchor")
+        anchor = market_anchor.active_anchor(self.db, self.cfg, self.predictor.version, now, params.ps) \
+            if c and c.enabled else None
         history: dict[tuple, dict] = {}     # observed values per (station, kind), read once per cycle
         features: dict[tuple, Features] = {}  # per (station, day, kind, forecast)
         shadow_errors: dict[str, str] = {}
@@ -287,7 +311,7 @@ class Engine:
             n_shadow += self._shadow_predictions(m, fc, bucket, values, lead_days, calib, feats, pred_id, now,
                                                  shadow_errors)
             forecast_age = (now - fetched_at).total_seconds() / 60.0
-            if self._signal(m, st, pred, pred_id, forecast_age, now, cal_p, calibrator.version):
+            if self._signal(m, st, pred, pred_id, forecast_age, now, cal_p, calibrator.version, anchor):
                 n_bets += 1
         for version, err in shadow_errors.items():
             self.db.log_event("WARNING", "shadow_model", f"{version}: {err}")
@@ -327,13 +351,28 @@ class Engine:
         return self.db.one(select(market_snapshots).where(ms.market_id == market_id).order_by(desc(ms.id)).limit(1))
 
     def _signal(self, m: dict, st, pred, pred_id: int, forecast_age: float, now: datetime,
-                cal_p: float, calibrator_version: str) -> bool:
+                cal_p: float, calibrator_version: str, anchor: tuple | None = None) -> bool:
         """Every rule uses the calibrated probability (the raw one when no
-        calibrator is approved); the raw model probability is kept alongside."""
+        calibrator is approved), or, with the market anchor on, the model
+        combined with the market price (wxbot/calibration/anchor.py); the raw
+        model probability is kept alongside. `anchor` is active_anchor()'s
+        (anchor or None, version or why not), None when the anchor is off."""
         cfg = self.cfg
         snap = self._latest_snapshot(m["id"]) or {}
         bid, ask, yes_px = snap.get("best_bid"), snap.get("best_ask"), snap.get("yes_price")
         yes_mid = (bid + ask) / 2 if bid is not None and ask is not None else yes_px
+        anchored = anchor_check = None
+        if anchor is not None:
+            fitted, why = anchor
+            book_mid = market_anchor.tight_mid(bid, ask, float(cfg.market_anchor.max_spread))
+            if fitted is None:
+                anchor_check = (False, f"no approved anchor: {why}")
+            elif book_mid is None:
+                anchor_check = (False, "no tight book: spread over max_spread or a side not quoted")
+            else:
+                anchored = fitted(pred.p_yes, book_mid)
+                cal_p, calibrator_version = anchored, fitted.version
+                anchor_check = (True, fitted.version)
         quotes = {  # side -> (calibrated prob, top-of-book ask for that side, mid-implied prob)
             "YES": (cal_p, ask if ask and ask < 1 else None, yes_mid),
             "NO": (1 - cal_p, (1 - bid) if bid else None, None if yes_mid is None else 1 - yes_mid),
@@ -351,6 +390,7 @@ class Engine:
             daily_pnl=portfolio.daily_realized_pnl(self.db, now), initial_bankroll=cfg.bankroll.initial,
             experiment_open=is_open(self.experiment, now),
             data_valid=bool(pred.inputs.get("data_quality", {}).get("ok", True)),
+            market_anchor=anchor_check,
         )
         results = rules.evaluate(ctx, cfg)
         fill = None
@@ -389,6 +429,8 @@ class Engine:
         probabilities = {"model": round(raw_prob, 6), "calibrated": round(model_prob, 6),
                          "calibrator": calibrator_version,
                          "market": None if market_prob is None else round(market_prob, 6)}
+        if anchor is not None:
+            probabilities["anchored"] = None if anchored is None else round(anchored, 6)
         results_out = ([{"rule": "probabilities", "passed": True, "value": probabilities, "threshold": None}]
                        + results + ([{"rule": "sizing_detail", "passed": True, "value": sizing, "threshold": None}]
                                     if sizing else []))

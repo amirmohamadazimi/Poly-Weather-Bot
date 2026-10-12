@@ -164,7 +164,11 @@ class Clock:
 
 @pytest.fixture
 def cfg(tmp_path):
-    return load_config(env={"WXBOT_APP__DATABASE_URL": f"sqlite:///{tmp_path / 'test.sqlite3'}"})
+    # The market anchor (tests/test_anchor.py) keeps a fresh database from betting
+    # until it has resolved markets to judge it on; elsewhere the model-only rules
+    # are what is tested.
+    return load_config(env={"WXBOT_APP__DATABASE_URL": f"sqlite:///{tmp_path / 'test.sqlite3'}",
+                            "WXBOT_MARKET_ANCHOR__ENABLED": "false"})
 
 
 def make_engine(cfg, db=None, pm=None, forecast=None, clock=None, shadows=None):

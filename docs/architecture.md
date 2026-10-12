@@ -14,8 +14,9 @@ others, and a failure in one stage is logged and does not stop the rest.
 | Prediction | `wxbot/model/` (`Predictor` interface, `NormalMultiModel`) | `predictions` (role production) |
 | Shadow baselines | `wxbot/model/baselines.py` (`RawForecast`, `Climatology`) | `predictions` (role shadow; never a signal) |
 | Probability calibration | `wxbot/calibration/` (`fit_round` once a day as its own stage, `active_calibrator` each cycle) | `prob_calibrators`, `predictions.calibrated_prob/calibrator_version` |
+| Market anchor | `wxbot/calibration/anchor.py` (`fit_round` once a day as its own stage, `active_anchor` each cycle; no bet while the newest fit is not approved) | `market_anchors`, the `market_anchor` rule and `anchored` probability in `signals.rule_results` |
 | Model registry | `wxbot/model/registry.py` (`sync_registry`, at engine start) | `model_versions` |
-| Market pricing and signal | `wxbot/strategy/rules.py` (`simulate_fill`, `evaluate`), on the calibrated probability | `signals` (raw and calibrated probability) |
+| Market pricing and signal | `wxbot/strategy/rules.py` (`simulate_fill`, `evaluate`), on the anchored probability (the calibrated one with the anchor off) | `signals` (raw and used probability) |
 | Risk and sizing | `wxbot/strategy/sizing.py`, `wxbot/execution/portfolio.py` | `signals.proposed_stake`, `rule_results` |
 | Paper trading | `wxbot/execution/paper.py` (`PaperBroker`: refuses fills that would overdraw cash), `wxbot/execution/portfolio.py` (ledger, mark-to-market) | `paper_bets` (with sizing and quotes), `bankroll_snapshots` |
 | Experiment identity | `wxbot/experiment.py` (`ensure_experiment`, at engine start) | `experiments` |

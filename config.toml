@@ -101,6 +101,23 @@ min_confidence = 0.95
 isotonic_min_block = 20
 refit_hours = 24
 
+[market_anchor]
+# Bet only where the model adds something to the market price
+# (wxbot/calibration/anchor.py). The probability the rules use is the model's
+# combined with the market's mid price, fitted on resolved markets whose book
+# was tight. The fit is refitted at most every refit_hours and judged on the
+# newest holdout_fraction of those markets: it counts only if it beats the
+# market price alone there on both Brier score and log loss, with at least
+# min_markets markets and the log-loss gain holding in min_confidence of
+# bootstrap resamples. Until then no bet is placed (predictions and signals are
+# still recorded). false goes back to betting on the model alone.
+enabled = true
+max_spread = 0.05           # a book wider than this (YES ask - YES bid) is not a price
+min_markets = 300
+holdout_fraction = 0.3
+min_confidence = 0.95
+refit_hours = 24
+
 [learning]
 # Retraining of the production model's station bias and error spread
 # (wxbot/learning/, README "How the learning system works"). Every retrain_days

@@ -88,13 +88,16 @@ paper bet ─> settlement (Polymarket resolution) ─> stats and learning (ledge
 4. **Calibrate** the probability with the approved probability calibrator, if
    there is one (see [Probability calibration](#probability-calibration)).
    Otherwise the model's own probability is used unchanged.
-5. **Signal:** pick the better side (YES or NO) and check every rule on the
-   calibrated probability. A prediction of 95% is *not* a bet unless the price
+5. **Anchor to the market:** combine the model with the market's mid price, and
+   allow a bet only while that combination has beaten the price alone on
+   resolved markets it was not fitted on (see [Market anchor](#market-anchor)).
+6. **Signal:** pick the better side (YES or NO) and check every rule on the
+   anchored probability. A prediction of 95% is *not* a bet unless the price
    leaves an edge.
-6. **Paper bet:** size it, then simulate the fill by walking the real CLOB order
+7. **Paper bet:** size it, then simulate the fill by walking the real CLOB order
    book (taking at most 25% of each level, plus slippage and fees).
-7. **Settle** when Polymarket resolves the market (prices pinned to 1/0).
-8. **Learn:** record the prediction, its inputs, price, decision and result in
+8. **Settle** when Polymarket resolves the market (prices pinned to 1/0).
+9. **Learn:** record the prediction, its inputs, price, decision and result in
    the learning ledger, and retrain the station bias and spread once a week,
    deploying a new set only if it does better on markets it was not fitted on.
 
@@ -116,6 +119,7 @@ you reconstruct exactly why each bet was made. Click any row in the dashboard to
 | Forecast sigma | ≤ 3.5 °C |
 | No existing position in that market | |
 | Daily realised loss | < 5% of starting bankroll |
+| Market anchor: an approved model + market fit, and a book no wider than 0.05 | on |
 
 ### Data validation
 
@@ -245,6 +249,39 @@ On the running experiment's data (1,837 resolved markets, 2026-10-01), neither
 method passes: isotonic improved log loss slightly (0.2311 → 0.2298) but not
 Brier, and won in only 67% of resamples; Platt was worse on Brier. So the raw
 probabilities stay in use.
+
+### Market anchor
+
+Both paper experiments lost money while every bet looked like a large edge.
+On markets with a real two-sided book the market's price was the better
+forecast, and the bets sat exactly where the model disagreed with the price
+most, which is where the model was most often wrong (2026-10-12: the bets won
+68% and 65% of the time against 87% predicted, close to the 70% and 68% the
+prices implied). A model that knows nothing the price does not has no edge to
+bet on, however confident it is.
+
+`wxbot/calibration/anchor.py` therefore fits
+`sigmoid(a · logit(p_model) + b · logit(p_market) + c)` on resolved markets
+(the same decision prediction per market as the calibrators, next to the
+market's book at that moment; only books with both sides quoted, a spread of
+at most 0.05 and the minimum liquidity count). `a` is how much the model adds
+to the price. The newest 30% of markets are held out, and the fit is approved
+only if, there, it beats the market price alone on both Brier score and log
+loss, with at least 300 markets and the log-loss gain holding in 95% of
+bootstrap resamples. It is refitted daily, every fit is kept in
+`market_anchors`, and the newest fit decides: while it is not approved, the
+`market_anchor` rule fails and no bet is placed. Predictions and signals are
+still recorded, so the evidence keeps building, and betting resumes by itself
+once the model earns it. `[market_anchor] enabled = false` goes back to betting
+on the model alone.
+
+Replayed day by day on both experiments' own data (2026-09-30 to 2026-10-12),
+the fit was never approved: the model's weight stayed between −0.5 and 0.1 and
+the combination never beat the price, so no bet would have been placed instead
+of the bets that lost $115.64 ($1,000 run) and $16.30 ($100 run). The report's
+"Market anchor" section shows the latest fit. The market backtest
+(`backtest-markets`) still replays the model-only rules: its price history is
+an hourly mid with no order book, so the spread condition cannot be replayed.
 
 ### How the learning system works
 

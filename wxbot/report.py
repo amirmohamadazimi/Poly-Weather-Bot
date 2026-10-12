@@ -6,6 +6,7 @@ from datetime import datetime
 
 from sqlalchemy import desc, select
 
+from wxbot.calibration import anchor as market_anchor
 from wxbot.db import Database, markets, paper_bets, system_events, utcnow
 from wxbot.evaluation.errors import error_analysis
 from wxbot.evaluation.metrics import latest_calibrators, model_comparison, overview, prediction_calibration
@@ -26,10 +27,11 @@ def build_report(db: Database, initial: float, now: datetime | None = None) -> d
     now = now or utcnow()
     ov = overview(db, initial, now)
     cal = prediction_calibration(db)
+    anchor = market_anchor.latest(db)
     return {"overview": ov, "prediction_calibration": cal, "model_comparison": model_comparison(db),
-            "calibrators": latest_calibrators(db), "errors": error_analysis(db),
+            "calibrators": latest_calibrators(db), "market_anchor": anchor, "errors": error_analysis(db),
             "model_updates": learning_summary(db, limit=10),
-            "verdict": verdict(ov, cal), "operation": operation(db, current(db), now),
+            "verdict": verdict(ov, cal) + anchor_verdict(anchor), "operation": operation(db, current(db), now),
             "status": status(db), "bets": all_bets(db)}
 
 
@@ -88,6 +90,34 @@ def verdict(ov: dict, cal: dict) -> list[str]:
                      f"{_num(cal['brier_model_on_market'])} was {'better' if better else 'worse'} than the market's "
                      f"{_num(cal['brier_market'])}.")
     return notes
+
+
+def anchor_verdict(anchor: dict | None) -> list[str]:
+    if anchor is None or anchor["approved"]:
+        return []
+    return [f"New bets are paused: the model has not yet beaten the market price on held-out markets (latest fit "
+            f"{str(anchor['fitted_at'])[:16]} UTC: {anchor['reason']}). See Market anchor below."]
+
+
+def anchor_section(anchor: dict | None) -> list[str]:
+    """The newest market-anchor fit (wxbot/calibration/anchor.py)."""
+    if anchor is None:
+        return []
+    out = ["", "## Market anchor (latest fit)", "",
+           "The bot bets only on the model combined with the market price, and only while that combination beats "
+           "the market price alone on resolved markets it was not fitted on.", "",
+           f"Fitted {str(anchor['fitted_at'])[:16]} UTC on {anchor['n']} resolved markets with a tight book "
+           f"({anchor['n_train']} to fit, the newest {anchor['n_holdout']} to judge): "
+           f"**{'approved' if anchor['approved'] else 'not approved'}**, {anchor['reason']}."]
+    if anchor["params"]:
+        p = anchor["params"]
+        out += ["", f"Weights: model {p['a']:.2f}, market price {p['b']:.2f}, constant {p['c']:.2f} "
+                "(a model weight near zero means the price already holds what the model knows).", "",
+                "| On the holdout | Brier | Log loss |", "|---|---:|---:|",
+                f"| Market price | {_num(anchor['brier_market'])} | {_num(anchor['log_loss_market'])} |",
+                f"| Model alone | {_num(anchor['brier_model'])} | {_num(anchor['log_loss_model'])} |",
+                f"| Model + market | {_num(anchor['brier_anchored'])} | {_num(anchor['log_loss_anchored'])} |"]
+    return out
 
 
 def model_updates(mu: dict | None) -> list[str]:
@@ -216,6 +246,7 @@ def to_markdown(rep: dict) -> str:
                   f"{_num(c['log_loss_before'])} → {_num(c['log_loss_after'])} | "
                   f"{'yes' if c['approved'] else 'no: ' + (c['reason'] or '')} | {'yes' if c['selected'] else ''} |"
                   for c in cals]
+    lines += anchor_section(rep.get("market_anchor"))
     lines += model_updates(rep.get("model_updates"))
     comp = rep.get("model_comparison")
     if comp:

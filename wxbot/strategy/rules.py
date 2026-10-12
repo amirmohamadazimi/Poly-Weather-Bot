@@ -94,6 +94,7 @@ class Context:
     stake: float | None = None   # None during the pre-check, before sizing
     data_valid: bool = True      # forecast snapshot passed data/validation.py
     experiment_open: bool = True  # before the experiment's planned end (wxbot/experiment.py)
+    market_anchor: tuple | None = None  # (passed, anchor version or why not); None = anchor off
     extra: dict = field(default_factory=dict)
 
 
@@ -127,6 +128,10 @@ def evaluate(ctx: Context, cfg) -> list[dict]:
         _r("forecast_uncertainty", ctx.sigma_c <= s.max_sigma_c, ctx.sigma_c, f"<= {s.max_sigma_c} C"),
         _r("no_existing_position", not ctx.has_position, ctx.has_position, False),
     ]
+    if ctx.market_anchor is not None:
+        ok, value = ctx.market_anchor
+        results.append(_r("market_anchor", ok, value,
+                          f"model + market fit that beats the market price, spread <= {cfg.market_anchor.max_spread}"))
     limit = cfg.risk.daily_loss_limit_pct * ctx.initial_bankroll
     results.append(_r("daily_loss_limit", limit <= 0 or ctx.daily_pnl > -limit,
                       round(ctx.daily_pnl, 2), f"> -{round(limit, 2)}" if limit > 0 else "off"))
