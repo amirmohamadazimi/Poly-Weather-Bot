@@ -1,0 +1,32 @@
+# Research only: pulls METAR reports and day-ahead hourly forecasts for the
+# same-day nowcast study (research/fetch_intraday.py) and commits them to this
+# branch. Runs on pushes to the research-intraday branch; never on main.
+name: research-fetch
+
+on:
+  push:
+    branches: [research-intraday]
+    paths: ["research/fetch_intraday.py", ".github/workflows/research-fetch.yml"]
+
+permissions:
+  contents: write
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - name: Fetch
+        run: python -m research.fetch_intraday 2025-10-01 2026-10-13
+      - name: Commit the data
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
+          git add research/data
+          git commit -m "research: METAR reports and day-ahead hourly forecasts, 2025-10-01 to 2026-10-13"
+          git push origin HEAD:research-intraday
