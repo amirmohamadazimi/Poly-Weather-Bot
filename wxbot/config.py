@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import tomllib
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -44,23 +45,24 @@ class Config:
         return json.loads(json.dumps(self._data))
 
 
-def load_config(path: str | os.PathLike | None = None, env: dict | None = None) -> Config:
-    env = os.environ if env is None else env
-    path = Path(path or env.get("WXBOT_CONFIG") or ROOT / "config.toml")
+def load_config(path: str | os.PathLike | None = None, env: Mapping[str, str] | None = None) -> Config:
+    environ: Mapping[str, str] = os.environ if env is None else env
+    path = Path(path or environ.get("WXBOT_CONFIG") or ROOT / "config.toml")
     with open(path, "rb") as fh:
         data = tomllib.load(fh)
-    for key, raw in env.items():
+    for key, raw in environ.items():
         if not key.startswith(ENV_PREFIX) or "__" not in key:
             continue
         section, _, name = key[len(ENV_PREFIX):].lower().partition("__")
         if section in data and name in data[section]:
             data[section][name] = _coerce(raw, data[section][name])
     # sqlite paths are relative to the project root, not the working directory
-    url = data["app"]["database_url"]
-    if url.startswith("sqlite:///") and not url.startswith("sqlite:////"):
-        rel = url[len("sqlite:///"):]
-        if rel != ":memory:":
-            full = (ROOT / rel).resolve()
-            full.parent.mkdir(parents=True, exist_ok=True)
-            data["app"]["database_url"] = f"sqlite:///{full}"
+    for section in ("app", "backtest"):
+        url = data.get(section, {}).get("database_url")
+        if url and url.startswith("sqlite:///") and not url.startswith("sqlite:////"):
+            rel = url[len("sqlite:///"):]
+            if rel != ":memory:":
+                full = (ROOT / rel).resolve()
+                full.parent.mkdir(parents=True, exist_ok=True)
+                data[section]["database_url"] = f"sqlite:///{full}"
     return Config(data)
