@@ -173,11 +173,11 @@ def create_app(cfg, db: Database, runner=None, now=utcnow) -> FastAPI:
 
     @app.get("/api/report", dependencies=deps)
     def report():
-        return build_report(db, initial())
+        return build_report(db, initial(), cfg=cfg)
 
     @app.get("/export/report.md", response_class=PlainTextResponse, dependencies=deps)
     def report_md():
-        return to_markdown(build_report(db, initial()))
+        return to_markdown(build_report(db, initial(), cfg=cfg))
 
     @app.get("/api/research", dependencies=deps)
     def research_report():
@@ -189,7 +189,7 @@ def create_app(cfg, db: Database, runner=None, now=utcnow) -> FastAPI:
 
     @app.get("/export/all.zip", dependencies=deps)
     def export_all():
-        data = export_zip_bytes(db, build_report(db, initial()))
+        data = export_zip_bytes(db, build_report(db, initial(), cfg=cfg))
         stamp = utcnow().strftime("%Y%m%d-%H%M")
         return Response(data, media_type="application/zip",
                         headers={"Content-Disposition": f'attachment; filename="wxbot-export-{stamp}.zip"'})

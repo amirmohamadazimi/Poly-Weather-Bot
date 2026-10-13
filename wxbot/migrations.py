@@ -39,6 +39,8 @@ ADDED_COLUMNS: list[tuple[str, str, TypeEngine]] = [
     ("predictions", "params_version", String(60)),                   # v2 M9
     ("prob_calibrators", "params_version", String(60)),              # v2 M9
     ("calibration_params", "param_set_id", Integer()),               # v2 M9
+    ("forecast_snapshots", "hourly_c", JSON()),                      # same-day model
+    ("market_anchors", "scope", String(12)),                         # same-day model
 ]
 
 

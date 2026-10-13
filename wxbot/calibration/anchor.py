@@ -31,6 +31,13 @@ price holds in min_confidence of 2,000 bootstrap resamples. Every fit is kept
 in market_anchors and the newest one at or before a cycle is in force. While it
 is not approved the market_anchor rule fails and no bet is placed; predictions
 and signals are still recorded, so the evidence keeps building.
+
+The same-day model (wxbot/model/nowcast.py) has its own anchor (scope
+"same-day"), fitted the same way on its own predictions: every one made with
+[nowcast] min_hours_left..max_hours_left hours to the end of the market's day
+and a tight book then. A market has several such rows, which are not
+independent, so the holdout is the newest holdout_fraction of markets,
+min_markets counts markets, and the bootstrap resamples whole markets.
 """
 from __future__ import annotations
 
@@ -45,8 +52,10 @@ from wxbot.calibration.methods import logit, sigmoid
 from wxbot.db import Database, market_anchors, market_resolutions, market_snapshots, markets, predictions
 from wxbot.evaluation.metrics import PRODUCTION, brier, log_loss
 from wxbot.learning.params import version_match
+from wxbot.model.nowcast import FEATURE_SET as SAME_DAY_FEATURES
 
 RIDGE = 1e-3   # keeps the fit finite when the data are separable
+SAME_DAY = "same-day"   # market_anchors.scope of the same-day model's fits
 
 
 @dataclass
@@ -111,7 +120,7 @@ def _solve(m: list[list[float]], v: list[float]) -> list[float]:
 def training_set(db: Database, cfg, model_version: str, fit_time: datetime,
                  param_set: dict | None = None) -> list[tuple[datetime, float, float, int]]:
     """[(decision time, model p_yes, market YES mid, outcome 1/0)], oldest first."""
-    mk, r, p, ms = markets.c, market_resolutions.c, predictions.c, market_snapshots.c
+    mk, r, p = markets.c, market_resolutions.c, predictions.c
     min_lead = float(cfg.strategy.min_lead_hours)
     cutoff: dict[str, tuple[datetime, int]] = {}
     for m in db.rows(select(mk.id, mk.station, mk.local_date, r.outcome)
@@ -125,36 +134,91 @@ def training_set(db: Database, cfg, model_version: str, fit_time: datetime,
                             version_match(p.params_version, param_set)).order_by(p.id)):
         if x["market_id"] in cutoff and _utc(x["ts"]) <= cutoff[x["market_id"]][0]:
             best[x["market_id"]] = (_utc(x["ts"]), x["p_yes"])   # rows are in id order: the last one wins
-    max_spread = float(cfg.market_anchor.max_spread)
-    min_liquidity = float(cfg.strategy.min_liquidity_usd)
-    ids = list(best)
     out = []
+    for mid, snaps in _books(db, list(best)):
+        ts, p_yes = best[mid]
+        price = _price_at(snaps, ts, cfg)
+        if price is not None:
+            out.append((ts, p_yes, price, cutoff[mid][1]))
+    return sorted(out)
+
+
+def nowcast_rows(db: Database, cfg, until: datetime, model_version: str | None = None,
+                 window: tuple[float, float] | None = None) -> list[tuple[datetime, float, float, int, str, float]]:
+    """[(prediction time, same-day p_yes, market YES mid, outcome 1/0, market
+    id, hours left)] for the same-day model's predictions (`model_version`, or
+    every version) on markets resolved by `until` whose book was tight then,
+    made `window` = (min, max) hours before the end of the market's day (any
+    time when None), oldest first."""
+    mk, r, p = markets.c, market_resolutions.c, predictions.c
+    which = p.model_version == model_version if model_version else p.feature_set == SAME_DAY_FEATURES
+    lo, hi = window or (0.0, 48.0)
+    by_market: dict[str, list[tuple[datetime, float, int, float]]] = {}
+    for x in db.rows(select(p.market_id, p.ts, p.p_yes, mk.station, mk.local_date, r.outcome)
+                     .join(markets, mk.id == p.market_id).join(market_resolutions, r.market_id == p.market_id)
+                     .where(r.resolved_at <= until, p.ts <= until, which)):
+        end = day_end(x["station"], x["local_date"])
+        ts = _utc(x["ts"])
+        left = None if end is None else (end - ts).total_seconds() / 3600
+        if left is not None and lo <= left <= hi:
+            by_market.setdefault(x["market_id"], []).append((ts, x["p_yes"], 1 if x["outcome"] == "YES" else 0, left))
+    out = []
+    for mid, snaps in _books(db, list(by_market)):
+        for ts, p_yes, y, left in by_market[mid]:
+            price = _price_at(snaps, ts, cfg)
+            if price is not None:
+                out.append((ts, p_yes, price, y, mid, left))
+    return sorted(out)
+
+
+def nowcast_training_set(db: Database, cfg, model_version: str,
+                         fit_time: datetime) -> list[tuple[datetime, float, float, int, str]]:
+    """The same-day anchor's rows: [(prediction time, p_yes, market YES mid,
+    outcome, market id)] for every prediction made [nowcast]
+    min_hours_left..max_hours_left hours before the end of its market's day
+    with a tight book."""
+    c = cfg.nowcast
+    window = (float(c.min_hours_left), float(c.max_hours_left))
+    return [x[:5] for x in nowcast_rows(db, cfg, fit_time, model_version, window)]
+
+
+def _books(db: Database, ids: list[str]):
+    """(market id, [(ts, bid, ask, liquidity)] oldest first) for each market with snapshots."""
+    ms = market_snapshots.c
     for i in range(0, len(ids), 500):
         books: dict[str, list[tuple]] = {}
         for s in db.rows(select(ms.market_id, ms.ts, ms.best_bid, ms.best_ask, ms.liquidity)
                          .where(ms.market_id.in_(ids[i:i + 500])).order_by(ms.market_id, ms.ts, ms.id)):
             books.setdefault(s["market_id"], []).append((_utc(s["ts"]), s["best_bid"], s["best_ask"], s["liquidity"]))
-        for mid, snaps in books.items():
-            ts, p_yes = best[mid]
-            j = bisect.bisect_right([t for t, *_ in snaps], ts) - 1
-            if j < 0:
-                continue
-            _, bid, ask, liquidity = snaps[j]
-            price = tight_mid(bid, ask, max_spread)
-            if price is not None and (liquidity or 0) >= min_liquidity:
-                out.append((ts, p_yes, price, cutoff[mid][1]))
-    return sorted(out)
+        yield from books.items()
 
 
-def judge(data: list[tuple[datetime, float, float, int]], cfg, model_version: str, fit_time: datetime) -> dict:
+def _price_at(snaps: list[tuple], ts: datetime, cfg) -> float | None:
+    """The YES mid of the latest snapshot at or before `ts`, if its book was tight and liquid enough."""
+    j = bisect.bisect_right([t for t, *_ in snaps], ts) - 1
+    if j < 0:
+        return None
+    _, bid, ask, liquidity = snaps[j]
+    price = tight_mid(bid, ask, float(cfg.market_anchor.max_spread))
+    return price if price is not None and (liquidity or 0) >= float(cfg.strategy.min_liquidity_usd) else None
+
+
+def judge(data: list[tuple], cfg, model_version: str, fit_time: datetime) -> dict:
     """Fit on the older rows of `data` (oldest decision first), judge on the
-    newest against the market price alone. Stores nothing."""
+    newest against the market price alone. Stores nothing. Rows with a fifth
+    element, the market id (the same-day model's), are split and resampled
+    by market, and the counts are markets."""
     c = cfg.market_anchor
-    n = len(data)
+    groups = list(dict.fromkeys(x[4] for x in data)) if data and len(data[0]) > 4 else None
+    n = len(groups) if groups is not None else len(data)
     n_hold = int(round(n * float(c.holdout_fraction)))
-    train, hold = data[:n - n_hold], data[n - n_hold:]
+    if groups is not None:
+        held = set(groups[n - n_hold:])
+        train, hold = [x for x in data if x[4] not in held], [x for x in data if x[4] in held]
+    else:
+        train, hold = data[:n - n_hold], data[n - n_hold:]
     row: dict = dict(version=f"anchor-{fit_time.strftime('%Y%m%dT%H%M')}", model_version=model_version,
-               fitted_at=fit_time, n=n, n_train=len(train), n_holdout=len(hold),
+               fitted_at=fit_time, n=n, n_train=n - n_hold, n_holdout=n_hold,
                train_from=train[0][0] if train else None, train_to=train[-1][0] if train else None,
                holdout_from=hold[0][0] if hold else None, holdout_to=hold[-1][0] if hold else None,
                params=None, brier_market=None, brier_model=None, brier_anchored=None, log_loss_market=None,
@@ -162,13 +226,13 @@ def judge(data: list[tuple[datetime, float, float, int]], cfg, model_version: st
     if n < int(c.min_markets) or len(train) < 2 or not hold:
         row["reason"] = f"only {n} resolved markets with a tight book (need {c.min_markets})"
         return row
-    params = fit_anchor([m for _, m, _, _ in train], [k for _, _, k, _ in train], [y for *_, y in train])
+    params = fit_anchor([x[1] for x in train], [x[2] for x in train], [x[3] for x in train])
     anchor = Anchor(row["version"], params, cfg.model.prob_floor, cfg.model.prob_ceiling)
-    model = [m for _, m, _, _ in hold]
-    market = [k for _, _, k, _ in hold]
-    ys = [y for *_, y in hold]
+    model = [x[1] for x in hold]
+    market = [x[2] for x in hold]
+    ys = [x[3] for x in hold]
     anchored = [anchor(m, k) for m, k in zip(model, market)]
-    conf = gain_confidence(market, anchored, ys)
+    conf = gain_confidence(market, anchored, ys, groups=None if groups is None else [x[4] for x in hold])
     row.update(params=params, brier_market=brier(market, ys), brier_model=brier(model, ys),
                brier_anchored=brier(anchored, ys), log_loss_market=log_loss(market, ys),
                log_loss_model=log_loss(model, ys), log_loss_anchored=log_loss(anchored, ys),
@@ -192,6 +256,15 @@ def fit_round(db: Database, cfg, model_version: str, fit_time: datetime, param_s
     return row
 
 
+def fit_nowcast_round(db: Database, cfg, model_version: str, fit_time: datetime) -> dict:
+    """Fit and judge the same-day model's anchor, store the fit."""
+    data = nowcast_training_set(db, cfg, model_version, fit_time)
+    row = judge(data, cfg, model_version, fit_time)
+    row.update(params_version=None, scope=SAME_DAY, reason=f"{row['reason']} ({len(data)} predictions)")
+    db.insert(market_anchors, **row)
+    return row
+
+
 def active_anchor(db: Database, cfg, model_version: str, now: datetime,
                   param_set: dict | None = None) -> tuple[Anchor | None, str]:
     """The newest fit at or before `now` for `param_set`: (anchor, its version)
@@ -207,6 +280,9 @@ def active_anchor(db: Database, cfg, model_version: str, now: datetime,
     return Anchor(row["version"], row["params"], cfg.model.prob_floor, cfg.model.prob_ceiling), row["version"]
 
 
-def latest(db: Database) -> dict | None:
-    """The newest anchor fit, for the report."""
-    return db.one(select(market_anchors).order_by(desc(market_anchors.c.fitted_at), desc(market_anchors.c.id)).limit(1))
+def latest(db: Database, scope: str | None = None) -> dict | None:
+    """The newest anchor fit of the decision model (scope None) or of the
+    same-day model (SAME_DAY), for the report."""
+    a = market_anchors.c
+    return db.one(select(market_anchors).where(a.scope.is_(None) if scope is None else a.scope == scope)
+                  .order_by(desc(a.fitted_at), desc(a.id)).limit(1))

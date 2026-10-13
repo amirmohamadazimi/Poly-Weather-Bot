@@ -111,3 +111,6 @@ def test_forecast_falls_back_to_one_request_per_model():
 
     by_kind, meta = OpenMeteoForecast(["good_a", "bad_model", "good_b"], session=Session()).fetch(STATIONS["EGLC"])
     assert by_kind["high"]["2026-09-28"] == {"good_a": 17.3, "good_b": 17.3}
+    hourly = by_kind["hourly"]["2026-09-28"]      # the same-day model's input
+    assert hourly["time"] == times and set(hourly["values"]) == {"good_a", "good_b"}
+    assert hourly["values"]["good_a"][:2] == [15.0, 15.1]
