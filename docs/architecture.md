@@ -10,12 +10,15 @@ others, and a failure in one stage is logged and does not stop the rest.
 | Resolution-criteria check | `wxbot/data/polymarket.py` (`parse_criteria`, `check_criteria`) | `markets.criteria`, `markets.tradeable/skip_reason` |
 | Weather forecasts | `wxbot/data/weather.py` (`ForecastSource` interface, `OpenMeteoForecast`) | `forecast_snapshots`, `forecast_values` |
 | Data validation | `wxbot/data/validation.py` | `forecast_snapshots.quality`, `forecast_values.valid/problem` |
+| Station reports (same-day model) | `wxbot/data/weather.py` (`IEMObservations.fetch_reports`), `Engine.collect_reports`, for stations with a market on their local today | `station_reports`, `forecast_snapshots.hourly_c` (that day only) |
 | Features | `wxbot/features.py` (`build_features`, climatology window) | `predictions.inputs.features`, `predictions.feature_set` |
 | Prediction | `wxbot/model/` (`Predictor` interface, `NormalMultiModel`) | `predictions` (role production) |
 | Shadow baselines | `wxbot/model/baselines.py` (`RawForecast`, `Climatology`) | `predictions` (role shadow; never a signal) |
+| Same-day model | `wxbot/model/nowcast.py` (`Nowcast`, parameters in `nowcast_params.json` from `research/fit_nowcast.py`); 1–18 h before a market's day ends it makes the signal, through its own anchor | `predictions` (role shadow, feature_set `same-day-v1`) |
 | Probability calibration | `wxbot/calibration/` (`fit_round` once a day as its own stage, `active_calibrator` each cycle) | `prob_calibrators`, `predictions.calibrated_prob/calibrator_version` |
+| Market anchor | `wxbot/calibration/anchor.py` (`fit_round` and, for the same-day model, `fit_nowcast_round` once a day as their own stage, `active_anchor` each cycle; no bet while the newest fit is not approved) | `market_anchors` (scope `same-day` for the same-day model), the `market_anchor` rule and `anchored` probability in `signals.rule_results` |
 | Model registry | `wxbot/model/registry.py` (`sync_registry`, at engine start) | `model_versions` |
-| Market pricing and signal | `wxbot/strategy/rules.py` (`simulate_fill`, `evaluate`), on the calibrated probability | `signals` (raw and calibrated probability) |
+| Market pricing and signal | `wxbot/strategy/rules.py` (`simulate_fill`, `evaluate`), on the anchored probability (the calibrated one with the anchor off) | `signals` (raw and used probability) |
 | Risk and sizing | `wxbot/strategy/sizing.py`, `wxbot/execution/portfolio.py` | `signals.proposed_stake`, `rule_results` |
 | Paper trading | `wxbot/execution/paper.py` (`PaperBroker`: refuses fills that would overdraw cash), `wxbot/execution/portfolio.py` (ledger, mark-to-market) | `paper_bets` (with sizing and quotes), `bankroll_snapshots` |
 | Experiment identity | `wxbot/experiment.py` (`ensure_experiment`, at engine start) | `experiments` |

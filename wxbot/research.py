@@ -76,7 +76,7 @@ def bets(db: Database, end: datetime) -> list[dict]:
         select(b.id, b.opened_at, decided.label("decided_at"), b.side, b.entry_price, b.stake, b.pnl, b.status,
                b.confidence, b.model_prob, b.market_prob, b.edge, b.event_id, mk.city, mk.station, mk.kind,
                mk.local_date, mk.bucket_lo, mk.bucket_hi, mk.bucket_label, mk.event_title, p.lead_days,
-               p.model_version, p.params_version, p.calibrator_version)
+               p.model_version, p.role, p.params_version, p.calibrator_version)
         .join(markets, mk.id == b.market_id).outerjoin(signals, s.id == b.signal_id)
         .outerjoin(predictions, p.id == s.prediction_id)
         .where(decided < end).order_by(decided, b.id))
@@ -84,7 +84,7 @@ def bets(db: Database, end: datetime) -> list[dict]:
         r["won"] = r["status"] == "WON"
         r["settled"] = r["status"] in ("WON", "LOST")
         r["shape"] = shape(r["bucket_lo"], r["bucket_hi"])
-        if r["params_version"] is None and r["model_version"] and old:
+        if r["params_version"] is None and r["model_version"] and r["role"] != "shadow" and old:   # not same-day
             r["params_version"] = old["version"]
     return rows
 

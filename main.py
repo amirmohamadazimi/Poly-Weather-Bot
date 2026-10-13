@@ -78,7 +78,7 @@ def main(argv: list[str] | None = None) -> int:
     from wxbot.experiment import starting_bankroll
     if args.command == "report":
         from wxbot.report import build_report, to_markdown
-        print(to_markdown(build_report(db, starting_bankroll(db, cfg))))
+        print(to_markdown(build_report(db, starting_bankroll(db, cfg), cfg=cfg)))
         return 0
     if args.command == "research":
         from wxbot import research
@@ -87,7 +87,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "export":
         from wxbot.export import export_to_dir
         from wxbot.report import build_report
-        out = export_to_dir(db, args.path or "exports", build_report(db, starting_bankroll(db, cfg)))
+        out = export_to_dir(db, args.path or "exports", build_report(db, starting_bankroll(db, cfg), cfg=cfg))
         print(f"exported to {out.resolve()}")
         return 0
     if args.command == "backtest":

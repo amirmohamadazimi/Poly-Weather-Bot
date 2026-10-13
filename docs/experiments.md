@@ -48,6 +48,25 @@
   answers whether the experiment found positive EV, with a verdict that needs
   five checks to pass, not a positive P/L. It is interim until the end,
   preliminary while the last bets settle, then final.
+* Market anchor (from the fix for the losses, after 2026-10-12): bets only while
+  the model combined with the market price beats the price alone on held-out
+  resolved markets (README "Market anchor"). On the data so far that has never
+  been the case, so from the run that picks this up the experiment places no
+  new bets until the model earns them; open bets still settle. REPORT.md says
+  so in its verdict and shows the latest fit.
+* Same-day model (forward test, after 2026-10-13): a model that uses the
+  station's reports from the market's own day (README "Same-day model"). In a
+  backtest on Sep 27 to Oct 12 2026 against live order books (tight books
+  only), the market was sharper at every hour of the day, e.g. log loss 0.103
+  vs 0.005 with 4–6 h left and 0.318 vs 0.262 with 12–15 h left on
+  highest-temperature markets, and every trading rule replayed at the recorded
+  books lost (−6% to −53%). The bot runs the one version that could not be
+  backtested, with the newest forecast, as a shadow model scored in REPORT.md;
+  it can bet only 1–18 h before a market's day ends and only once its own
+  anchor beats the market price on held-out markets. The research data
+  (a year of METAR reports and day-ahead hourly forecasts) is on the
+  `research-intraday` branch; `research/fit_nowcast.py` rebuilds the
+  parameters from it.
 * State: `wxbot.sqlite3.gz`, `REPORT.md` and `RESEARCH.md` on the
   `paper-data-100` branch.
 

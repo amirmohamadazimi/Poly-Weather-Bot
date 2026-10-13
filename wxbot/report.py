@@ -6,9 +6,13 @@ from datetime import datetime
 
 from sqlalchemy import desc, select
 
+from wxbot.calibration import anchor as market_anchor
+from wxbot.config import load_config
 from wxbot.db import Database, markets, paper_bets, system_events, utcnow
 from wxbot.evaluation.errors import error_analysis
-from wxbot.evaluation.metrics import latest_calibrators, model_comparison, overview, prediction_calibration
+from wxbot.evaluation.metrics import (
+    brier, latest_calibrators, log_loss, model_comparison, overview, prediction_calibration,
+)
 from wxbot.evaluation.operation import operation
 from wxbot.experiment import current
 from wxbot.learning import summary as learning_summary
@@ -22,15 +26,19 @@ def _num(x, nd=4) -> str:
     return "n/a" if x is None else f"{x:.{nd}f}"
 
 
-def build_report(db: Database, initial: float, now: datetime | None = None) -> dict:
+def build_report(db: Database, initial: float, now: datetime | None = None, cfg=None) -> dict:
     now = now or utcnow()
+    cfg = cfg or load_config()
     ov = overview(db, initial, now)
     cal = prediction_calibration(db)
+    anchor = market_anchor.latest(db)
+    same_anchor = market_anchor.latest(db, market_anchor.SAME_DAY)
+    same = {"scores": same_day_scores(market_anchor.nowcast_rows(db, cfg, now)), "anchor": same_anchor}
     return {"overview": ov, "prediction_calibration": cal, "model_comparison": model_comparison(db),
-            "calibrators": latest_calibrators(db), "errors": error_analysis(db),
-            "model_updates": learning_summary(db, limit=10),
-            "verdict": verdict(ov, cal), "operation": operation(db, current(db), now),
-            "status": status(db), "bets": all_bets(db)}
+            "calibrators": latest_calibrators(db), "market_anchor": anchor, "same_day": same,
+            "errors": error_analysis(db), "model_updates": learning_summary(db, limit=10),
+            "verdict": verdict(ov, cal) + anchor_verdict(anchor, same_anchor),
+            "operation": operation(db, current(db), now), "status": status(db), "bets": all_bets(db)}
 
 
 def status(db: Database) -> dict:
@@ -88,6 +96,77 @@ def verdict(ov: dict, cal: dict) -> list[str]:
                      f"{_num(cal['brier_model_on_market'])} was {'better' if better else 'worse'} than the market's "
                      f"{_num(cal['brier_market'])}.")
     return notes
+
+
+def anchor_verdict(anchor: dict | None, same_day: dict | None = None) -> list[str]:
+    if anchor is None or anchor["approved"]:
+        return []
+    if same_day and same_day["approved"]:
+        return [f"Bets from the forecast model are paused: it has not yet beaten the market price on held-out "
+                f"markets (latest fit {str(anchor['fitted_at'])[:16]} UTC: {anchor['reason']}). The same-day model "
+                "has, so it may bet on markets on their own day. See Market anchor and Same-day model below."]
+    return [f"New bets are paused: the model has not yet beaten the market price on held-out markets (latest fit "
+            f"{str(anchor['fitted_at'])[:16]} UTC: {anchor['reason']}). See Market anchor below."]
+
+
+def anchor_section(anchor: dict | None) -> list[str]:
+    """The newest market-anchor fit (wxbot/calibration/anchor.py)."""
+    if anchor is None:
+        return []
+    out = ["", "## Market anchor (latest fit)", "",
+           "The bot bets only on the model combined with the market price, and only while that combination beats "
+           "the market price alone on resolved markets it was not fitted on.", "",
+           f"Fitted {str(anchor['fitted_at'])[:16]} UTC on {anchor['n']} resolved markets with a tight book "
+           f"({anchor['n_train']} to fit, the newest {anchor['n_holdout']} to judge): "
+           f"**{'approved' if anchor['approved'] else 'not approved'}**, {anchor['reason']}."]
+    if anchor["params"]:
+        p = anchor["params"]
+        out += ["", f"Weights: model {p['a']:.2f}, market price {p['b']:.2f}, constant {p['c']:.2f} "
+                "(a model weight near zero means the price already holds what the model knows).", "",
+                "| On the holdout | Brier | Log loss |", "|---|---:|---:|",
+                f"| Market price | {_num(anchor['brier_market'])} | {_num(anchor['log_loss_market'])} |",
+                f"| Model alone | {_num(anchor['brier_model'])} | {_num(anchor['log_loss_model'])} |",
+                f"| Model + market | {_num(anchor['brier_anchored'])} | {_num(anchor['log_loss_anchored'])} |"]
+    return out
+
+
+SAME_DAY_BANDS = [(0, 3), (3, 6), (6, 12), (12, 24)]   # hours left until the end of the market's day
+
+
+def same_day_scores(rows: list[tuple]) -> list[dict]:
+    """The same-day model against the market's mid price at the same moment,
+    by hours left (rows from anchor.nowcast_rows), then over all rows."""
+    out = []
+    for lo, hi in [*SAME_DAY_BANDS, (0, 24)]:
+        sel = [x for x in rows if lo <= x[5] < hi or (hi == 24 and x[5] >= 24)]
+        model, market, ys = [x[1] for x in sel], [x[2] for x in sel], [x[3] for x in sel]
+        out.append({"hours_left": f"{lo}-{hi}" if (lo, hi) != (0, 24) else "all", "n": len(sel),
+                    "markets": len({x[4] for x in sel}), "log_loss_model": log_loss(model, ys),
+                    "log_loss_market": log_loss(market, ys), "brier_model": brier(model, ys),
+                    "brier_market": brier(market, ys)})
+    return out
+
+
+def same_day_section(same: dict | None) -> list[str]:
+    """The same-day model's forward test (wxbot/model/nowcast.py)."""
+    if not same or (not same["scores"][-1]["n"] and same["anchor"] is None):
+        return []
+    out = ["", "## Same-day model (forward test)", "",
+           "On each market's own day the same-day model prices every bucket from the station's reports so far and "
+           "the newest hourly forecast. It is scored here against the market's mid price at the same moment, on "
+           "resolved markets whose book was tight then (lower is better). It can bet only once its own market "
+           "anchor beats the market price on held-out markets.", "",
+           "| Hours left | Predictions | Markets | Log loss: model / market | Brier: model / market |",
+           "|---|---:|---:|---|---|"]
+    out += [f"| {r['hours_left']} | {r['n']} | {r['markets']} | {_num(r['log_loss_model'])} / "
+            f"{_num(r['log_loss_market'])} | {_num(r['brier_model'])} / {_num(r['brier_market'])} |"
+            for r in same["scores"] if r["n"]]
+    a = same["anchor"]
+    if a is not None:
+        out += ["", f"Latest anchor fit {str(a['fitted_at'])[:16]} UTC on {a['n']} markets "
+                f"({a['n_train']} to fit, the newest {a['n_holdout']} to judge): "
+                f"**{'approved' if a['approved'] else 'not approved'}**, {a['reason']}."]
+    return out
 
 
 def model_updates(mu: dict | None) -> list[str]:
@@ -216,6 +295,8 @@ def to_markdown(rep: dict) -> str:
                   f"{_num(c['log_loss_before'])} → {_num(c['log_loss_after'])} | "
                   f"{'yes' if c['approved'] else 'no: ' + (c['reason'] or '')} | {'yes' if c['selected'] else ''} |"
                   for c in cals]
+    lines += anchor_section(rep.get("market_anchor"))
+    lines += same_day_section(rep.get("same_day"))
     lines += model_updates(rep.get("model_updates"))
     comp = rep.get("model_comparison")
     if comp:

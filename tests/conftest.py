@@ -164,12 +164,16 @@ class Clock:
 
 @pytest.fixture
 def cfg(tmp_path):
-    return load_config(env={"WXBOT_APP__DATABASE_URL": f"sqlite:///{tmp_path / 'test.sqlite3'}"})
+    # The market anchor (tests/test_anchor.py) keeps a fresh database from betting
+    # until it has resolved markets to judge it on; elsewhere the model-only rules
+    # are what is tested. The same-day model is tested in tests/test_nowcast.py.
+    return load_config(env={"WXBOT_APP__DATABASE_URL": f"sqlite:///{tmp_path / 'test.sqlite3'}",
+                            "WXBOT_MARKET_ANCHOR__ENABLED": "false", "WXBOT_NOWCAST__ENABLED": "false"})
 
 
-def make_engine(cfg, db=None, pm=None, forecast=None, clock=None, shadows=None):
+def make_engine(cfg, db=None, pm=None, forecast=None, clock=None, shadows=None, observer=None, nowcast=None):
     db = db or Database(cfg.app.database_url)
     return Engine(cfg=cfg, db=db, polymarket=pm or FakePolymarket([london_event(), unknown_event()]),
-                  forecaster=forecast or FakeForecast(), observer=FakeObservations(),
+                  forecaster=forecast or FakeForecast(), observer=observer or FakeObservations(),
                   predictor=production_model(cfg), broker=make_broker(cfg, db), sizer=make_sizer(cfg),
-                  clock=clock or Clock(), shadows=shadow_models(cfg) if shadows is None else shadows)
+                  clock=clock or Clock(), shadows=shadow_models(cfg) if shadows is None else shadows, nowcast=nowcast)
