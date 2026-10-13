@@ -6,11 +6,12 @@ paper bet can be traced back to the exact data and rule results behind it.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+from typing import Any
 
 from sqlalchemy import (
-    JSON, Boolean, Column, DateTime, Float, ForeignKey, Integer, MetaData, String, Table, Text,
-    create_engine, event, insert, select, update,
+    JSON, Boolean, Column, DateTime, Float, ForeignKey, Integer, MetaData, String, Table, Text, create_engine, event,
+    insert, select, update,
 )
 from sqlalchemy.engine import Engine
 
@@ -18,7 +19,7 @@ metadata = MetaData()
 
 
 def utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _ts(name: str = "created_at", **kw) -> Column:
@@ -33,6 +34,7 @@ system_events = Table(
     Column("component", String(40), nullable=False),
     Column("message", Text, nullable=False),
     Column("details", JSON),
+    Column("code", String(40), index=True),           # event code, e.g. MODEL_DEPLOYED (v2 M9)
 )
 
 bot_state = Table(  # small key/value store: last update times, loop status
@@ -66,6 +68,17 @@ forecast_snapshots = Table(
     Column("request", JSON),                          # url + params used
     Column("issue_time", DateTime(timezone=True)),    # oldest model run used; None if unknown
     Column("quality", JSON),                          # validation result, see data/validation.py
+    Column("hourly_c", JSON),                         # local today only: {"time": [...], "values": {model: [...]}}
+)
+
+station_reports = Table(  # the station's own reports (METARs) during its local today, for the same-day model
+    "station_reports", metadata,
+    Column("id", Integer, primary_key=True),
+    Column("station", String(10), nullable=False, index=True),
+    Column("valid", DateTime(timezone=True), nullable=False, index=True),   # report time, UTC
+    Column("temp_c", Float, nullable=False),
+    Column("source", String(40), nullable=False),
+    _ts("fetched_at"),
 )
 
 market_price_history = Table(  # CLOB traded-price series, stored once a market resolves
@@ -172,6 +185,7 @@ predictions = Table(
     Column("feature_set", String(20)),                # see wxbot/features.py
     Column("calibrated_prob", Float),                 # p_yes after the active calibrator (production only)
     Column("calibrator_version", String(60)),         # prob_calibrators.version, or "identity"
+    Column("params_version", String(60)),             # param_sets.version priced with (production only, v2 M9)
 )
 
 prob_calibrators = Table(  # every probability-calibrator fit; the newest round's selected one is active
@@ -197,6 +211,34 @@ prob_calibrators = Table(  # every probability-calibrator fit; the newest round'
     Column("approved", Boolean, nullable=False),
     Column("selected", Boolean, nullable=False),       # the one used until the next fit round
     Column("reason", Text),
+    Column("params_version", String(60)),              # fitted on (and applied to) this param set only (v2 M9)
+)
+
+market_anchors = Table(  # every market-anchor fit (wxbot/calibration/anchor.py); the newest one is in force
+    "market_anchors", metadata,
+    Column("id", Integer, primary_key=True),
+    Column("version", String(60), nullable=False),
+    Column("model_version", String(40), nullable=False, index=True),
+    Column("params_version", String(60)),              # fitted on (and applied to) this param set only
+    _ts("fitted_at"),
+    Column("n", Integer),                              # resolved markets with a tight book
+    Column("n_train", Integer),
+    Column("n_holdout", Integer),
+    Column("train_from", DateTime(timezone=True)),     # decision times covered
+    Column("train_to", DateTime(timezone=True)),
+    Column("holdout_from", DateTime(timezone=True)),
+    Column("holdout_to", DateTime(timezone=True)),
+    Column("params", JSON),                            # a (model), b (market), c
+    Column("brier_market", Float),                     # on the holdout: the market's mid price
+    Column("brier_model", Float),                      # the model alone
+    Column("brier_anchored", Float),                   # the anchor
+    Column("log_loss_market", Float),
+    Column("log_loss_model", Float),
+    Column("log_loss_anchored", Float),
+    Column("improvement_confidence", Float),           # share of holdout bootstrap resamples where it beats the market
+    Column("approved", Boolean, nullable=False),       # only an approved anchor lets the bot bet
+    Column("reason", Text),
+    Column("scope", String(12)),                       # "same-day" (wxbot/model/nowcast.py); None = decision model
 )
 
 model_versions = Table(  # model registry: every model version the bot has run, and its current role
@@ -293,6 +335,7 @@ experiments = Table(  # what this database is: one experiment per database
     Column("git_ref", String(80)),                    # WXBOT_GIT_REF or GITHUB_SHA when the row was created
     Column("config", JSON),                           # settings at the start, secrets removed
     _ts("created_at"),
+    Column("planned_days", Integer),                  # experiment.days when first set; NULL = no end (v2 M13)
 )
 
 calibration_params = Table(
@@ -308,6 +351,81 @@ calibration_params = Table(
     Column("window_start", String(10)),
     Column("window_end", String(10)),
     Column("backtest_run_id", Integer),
+    Column("param_set_id", Integer, index=True),       # param_sets.id (v2 M9)
+)
+
+param_sets = Table(  # every fit of the station bias/spread parameters; one is production (v2 M9, wxbot/learning/)
+    "param_sets", metadata,
+    Column("id", Integer, primary_key=True),
+    Column("version", String(60), nullable=False, unique=True),
+    Column("model_version", String(40)),
+    _ts("created_at"),
+    Column("origin", String(12)),                     # backtest | retrain | legacy (fitted before v2 M9)
+    Column("status", String(12), nullable=False, index=True),
+    # production | previous (kept for a rollback) | retired | rolled_back | rejected | candidate
+    Column("train_from", String(10)),                 # market days of forecasts and observations fitted
+    Column("train_to", String(10)),
+    Column("train_days", Integer),
+    Column("n_rows", Integer),                        # station/kind/lead rows fitted
+    Column("n_carried", Integer),                     # rows kept from production (too few days or no data)
+    Column("evaluation", JSON),                       # out-of-sample comparison with production
+    Column("approved", Boolean),
+    Column("reason", Text),
+    Column("deployed_at", DateTime(timezone=True)),   # last time it became production
+    Column("retired_at", DateTime(timezone=True)),    # last time it left production
+    Column("replaces", String(60)),                   # the production version it replaced
+    Column("legacy", Boolean, nullable=False, default=False),  # predictions without params_version belong to it
+)
+
+prediction_outcomes = Table(  # the learning ledger: every resolved market's decision prediction (v2 M9)
+    "prediction_outcomes", metadata,
+    Column("id", Integer, primary_key=True),
+    Column("market_id", String(40), ForeignKey("markets.id"), unique=True),
+    Column("prediction_id", Integer, ForeignKey("predictions.id")),
+    Column("signal_id", Integer),
+    Column("bet_id", Integer),
+    _ts("recorded_at"),
+    Column("resolved_at", DateTime(timezone=True)),
+    Column("decision_time", DateTime(timezone=True)),  # when the prediction was made
+    Column("model_version", String(40), index=True),
+    Column("params_version", String(60), index=True),
+    Column("calibrator_version", String(60)),
+    Column("feature_set", String(20)),
+    Column("event_id", String(40)),
+    Column("station", String(10), index=True),
+    Column("city", String(60)),
+    Column("kind", String(4)),
+    Column("local_date", String(10), index=True),
+    Column("lead_days", Integer),
+    Column("unit", String(1)),
+    Column("bucket_lo", Float),
+    Column("bucket_hi", Float),
+    Column("forecast_snapshot_id", Integer),
+    Column("forecast_source", String(40)),
+    Column("n_models", Integer),
+    Column("model_spread_c", Float),
+    Column("mu_c", Float),
+    Column("sigma_c", Float),
+    Column("distance_sigma", Float),                   # forecast mean's distance from the bucket, in sigmas
+    Column("p_yes", Float, nullable=False),            # the model's probability
+    Column("p_used", Float),                           # what the rules used (calibrated)
+    Column("market_yes", Float),                       # market's mid-implied YES probability then
+    Column("liquidity", Float),
+    Column("outcome", String(3), nullable=False),
+    Column("y", Integer, nullable=False),              # 1 = YES
+    Column("error_class", String(30), index=True),     # wxbot/evaluation/errors.py classify(p_yes, y)
+    Column("brier", Float),
+    Column("log_loss", Float),
+    Column("market_brier", Float),
+    Column("decision", String(10)),                    # the signal: BET | NO_BET
+    Column("side", String(3)),
+    Column("entry_price", Float),
+    Column("reason", Text),
+    Column("bet_side", String(3)),                     # the paper bet on this market, if any
+    Column("bet_status", String(8)),
+    Column("bet_stake", Float),
+    Column("bet_pnl", Float),
+    Column("inputs", JSON),                            # model values, calibration, features, data quality
 )
 
 backtest_runs = Table(
@@ -319,17 +437,66 @@ backtest_runs = Table(
     Column("report", JSON),
 )
 
+historical_forecasts = Table(  # market backtest: what each model forecast N days ahead (Previous Runs)
+    "historical_forecasts", metadata,
+    Column("id", Integer, primary_key=True),
+    Column("source", String(40), nullable=False),
+    Column("station", String(10), nullable=False, index=True),
+    Column("kind", String(4), nullable=False),
+    Column("local_date", String(10), nullable=False),
+    Column("lead_days", Integer, nullable=False),      # previous_dayN: from runs at least N x 24 h before
+    Column("model", String(40), nullable=False),
+    Column("value_c", Float, nullable=False),          # daily high/low over the station's local day
+    _ts("fetched_at"),
+)
+
+backtest_predictions = Table(  # market backtest: every replayed decision and what each source said then
+    "backtest_predictions", metadata,
+    Column("id", Integer, primary_key=True),
+    Column("run_id", Integer, ForeignKey("backtest_runs.id"), index=True),
+    Column("market_id", String(40), index=True),
+    Column("lead_days", Integer),
+    Column("decision_time", DateTime(timezone=True)),
+    Column("price_time", DateTime(timezone=True)),     # the price point used: the last at or before the decision
+    Column("market_prob", Float),                      # YES price then
+    Column("p_climatology", Float),
+    Column("p_raw_forecast", Float),
+    Column("p_model", Float),
+    Column("p_calibrated", Float),
+    Column("calibrator_version", String(60)),
+    Column("n_models", Integer),
+    Column("mu_c", Float),
+    Column("sigma_c", Float),
+    Column("bias_c", Float),                           # walk-forward station bias used
+    Column("bias_n", Integer),                         # past days it was fitted on (0 = default spread, no bias)
+    Column("outcome", Integer),                        # 1 = YES
+    Column("side", String(3)),                         # flat-stake strategy: the side the rules looked at
+    Column("entry_price", Float),
+    Column("decision", String(10)),                    # BET | NO_BET | HELD (already bet at an earlier lead)
+    Column("reason", Text),
+    Column("pnl_per_dollar", Float),                   # flat $1 stake; None without a bet
+)
+
 EXPORT_TABLES = [
     "paper_bets", "signals", "predictions", "forecast_snapshots", "forecast_values", "markets",
     "market_snapshots", "market_price_history", "market_criteria_history", "market_resolutions", "bankroll_snapshots",
     "weather_observations", "calibration_params", "backtest_runs", "model_versions", "prob_calibrators",
-    "experiments", "system_events",
+    "experiments", "system_events", "historical_forecasts", "backtest_predictions", "param_sets",
+    "prediction_outcomes", "market_anchors", "station_reports",
 ]
+
+
+def inserted_id(result) -> int:
+    """The primary key of the row a single-row insert just wrote."""
+    pk = result.inserted_primary_key
+    if not pk:
+        raise LookupError("the insert returned no primary key")
+    return pk[0]
 
 
 class Database:
     def __init__(self, url: str):
-        kw = {"future": True}
+        kw: dict[str, Any] = {"future": True}
         if url.startswith("sqlite"):
             kw["connect_args"] = {"check_same_thread": False, "timeout": 30}
         self.engine: Engine = create_engine(url, **kw)
@@ -347,9 +514,7 @@ class Database:
     # -- tiny helpers -------------------------------------------------------
     def insert(self, table: Table, **values) -> int:
         with self.engine.begin() as conn:
-            res = conn.execute(insert(table).values(**values))
-            pk = res.inserted_primary_key
-            return pk[0] if pk else None
+            return inserted_id(conn.execute(insert(table).values(**values)))
 
     def rows(self, stmt) -> list[dict]:
         with self.engine.connect() as conn:
@@ -358,6 +523,13 @@ class Database:
     def one(self, stmt) -> dict | None:
         rows = self.rows(stmt)
         return rows[0] if rows else None
+
+    def agg(self, stmt) -> dict:
+        """The row of an aggregate query (count, sum, min), which always has one."""
+        row = self.one(stmt)
+        if row is None:
+            raise LookupError("an aggregate query returned no row")
+        return row
 
     def set_state(self, key: str, value) -> None:
         text = value if isinstance(value, str) else json.dumps(value, default=str)
@@ -371,6 +543,7 @@ class Database:
         row = self.one(select(bot_state.c.value).where(bot_state.c.key == key))
         return default if row is None else row["value"]
 
-    def log_event(self, level: str, component: str, message: str, details: dict | None = None) -> None:
+    def log_event(self, level: str, component: str, message: str, details: dict | None = None,
+                  code: str | None = None) -> None:
         self.insert(system_events, ts=utcnow(), level=level, component=component,
-                    message=message[:2000], details=details)
+                    message=message[:2000], details=details, code=code)

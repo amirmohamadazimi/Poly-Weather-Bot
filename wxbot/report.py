@@ -1,12 +1,21 @@
-"""End-of-experiment performance report (markdown + JSON)."""
+"""The experiment's performance report (markdown + JSON): REPORT.md and the dashboard's export."""
 from __future__ import annotations
 
 import json
+from datetime import datetime
 
 from sqlalchemy import desc, select
 
-from wxbot.db import Database, markets, paper_bets, system_events
-from wxbot.evaluation.metrics import latest_calibrators, model_comparison, overview, prediction_calibration
+from wxbot.calibration import anchor as market_anchor
+from wxbot.config import load_config
+from wxbot.db import Database, markets, paper_bets, system_events, utcnow
+from wxbot.evaluation.errors import error_analysis
+from wxbot.evaluation.metrics import (
+    brier, latest_calibrators, log_loss, model_comparison, overview, prediction_calibration,
+)
+from wxbot.evaluation.operation import operation
+from wxbot.experiment import current
+from wxbot.learning import summary as learning_summary
 
 
 def _pct(x) -> str:
@@ -17,13 +26,19 @@ def _num(x, nd=4) -> str:
     return "n/a" if x is None else f"{x:.{nd}f}"
 
 
-def build_report(db: Database, initial: float) -> dict:
-    ov = overview(db, initial)
+def build_report(db: Database, initial: float, now: datetime | None = None, cfg=None) -> dict:
+    now = now or utcnow()
+    cfg = cfg or load_config()
+    ov = overview(db, initial, now)
     cal = prediction_calibration(db)
+    anchor = market_anchor.latest(db)
+    same_anchor = market_anchor.latest(db, market_anchor.SAME_DAY)
+    same = {"scores": same_day_scores(market_anchor.nowcast_rows(db, cfg, now)), "anchor": same_anchor}
     return {"overview": ov, "prediction_calibration": cal, "model_comparison": model_comparison(db),
-            "calibrators": latest_calibrators(db),
-            "verdict": verdict(ov, cal),
-            "status": status(db), "bets": all_bets(db)}
+            "calibrators": latest_calibrators(db), "market_anchor": anchor, "same_day": same,
+            "errors": error_analysis(db), "model_updates": learning_summary(db, limit=10),
+            "verdict": verdict(ov, cal) + anchor_verdict(anchor, same_anchor),
+            "operation": operation(db, current(db), now), "status": status(db), "bets": all_bets(db)}
 
 
 def status(db: Database) -> dict:
@@ -75,11 +90,140 @@ def verdict(ov: dict, cal: dict) -> list[str]:
         gap = ov["win_rate"] - ov["expected_win_rate"]
         notes.append(f"Bets won {_pct(ov['win_rate'])} against {_pct(ov['expected_win_rate'])} predicted "
                      f"({'over' if gap >= 0 else 'under'}-performing by {abs(gap) * 100:.1f} points).")
-    if cal["brier_model"] is not None and cal["brier_market"] is not None:
-        better = cal["brier_model"] < cal["brier_market"]
-        notes.append(f"Across {cal['n_market']} resolved markets the model's Brier score {_num(cal['brier_model'])} "
-                     f"was {'better' if better else 'worse'} than the market's {_num(cal['brier_market'])}.")
+    if cal["brier_model_on_market"] is not None and cal["brier_market"] is not None:
+        better = cal["brier_model_on_market"] < cal["brier_market"]
+        notes.append(f"Across {cal['n_market']} resolved liquid markets the model's Brier score "
+                     f"{_num(cal['brier_model_on_market'])} was {'better' if better else 'worse'} than the market's "
+                     f"{_num(cal['brier_market'])}.")
     return notes
+
+
+def anchor_verdict(anchor: dict | None, same_day: dict | None = None) -> list[str]:
+    if anchor is None or anchor["approved"]:
+        return []
+    if same_day and same_day["approved"]:
+        return [f"Bets from the forecast model are paused: it has not yet beaten the market price on held-out "
+                f"markets (latest fit {str(anchor['fitted_at'])[:16]} UTC: {anchor['reason']}). The same-day model "
+                "has, so it may bet on markets on their own day. See Market anchor and Same-day model below."]
+    return [f"New bets are paused: the model has not yet beaten the market price on held-out markets (latest fit "
+            f"{str(anchor['fitted_at'])[:16]} UTC: {anchor['reason']}). See Market anchor below."]
+
+
+def anchor_section(anchor: dict | None) -> list[str]:
+    """The newest market-anchor fit (wxbot/calibration/anchor.py)."""
+    if anchor is None:
+        return []
+    out = ["", "## Market anchor (latest fit)", "",
+           "The bot bets only on the model combined with the market price, and only while that combination beats "
+           "the market price alone on resolved markets it was not fitted on.", "",
+           f"Fitted {str(anchor['fitted_at'])[:16]} UTC on {anchor['n']} resolved markets with a tight book "
+           f"({anchor['n_train']} to fit, the newest {anchor['n_holdout']} to judge): "
+           f"**{'approved' if anchor['approved'] else 'not approved'}**, {anchor['reason']}."]
+    if anchor["params"]:
+        p = anchor["params"]
+        out += ["", f"Weights: model {p['a']:.2f}, market price {p['b']:.2f}, constant {p['c']:.2f} "
+                "(a model weight near zero means the price already holds what the model knows).", "",
+                "| On the holdout | Brier | Log loss |", "|---|---:|---:|",
+                f"| Market price | {_num(anchor['brier_market'])} | {_num(anchor['log_loss_market'])} |",
+                f"| Model alone | {_num(anchor['brier_model'])} | {_num(anchor['log_loss_model'])} |",
+                f"| Model + market | {_num(anchor['brier_anchored'])} | {_num(anchor['log_loss_anchored'])} |"]
+    return out
+
+
+SAME_DAY_BANDS = [(0, 3), (3, 6), (6, 12), (12, 24)]   # hours left until the end of the market's day
+
+
+def same_day_scores(rows: list[tuple]) -> list[dict]:
+    """The same-day model against the market's mid price at the same moment,
+    by hours left (rows from anchor.nowcast_rows), then over all rows."""
+    out = []
+    for lo, hi in [*SAME_DAY_BANDS, (0, 24)]:
+        sel = [x for x in rows if lo <= x[5] < hi or (hi == 24 and x[5] >= 24)]
+        model, market, ys = [x[1] for x in sel], [x[2] for x in sel], [x[3] for x in sel]
+        out.append({"hours_left": f"{lo}-{hi}" if (lo, hi) != (0, 24) else "all", "n": len(sel),
+                    "markets": len({x[4] for x in sel}), "log_loss_model": log_loss(model, ys),
+                    "log_loss_market": log_loss(market, ys), "brier_model": brier(model, ys),
+                    "brier_market": brier(market, ys)})
+    return out
+
+
+def same_day_section(same: dict | None) -> list[str]:
+    """The same-day model's forward test (wxbot/model/nowcast.py)."""
+    if not same or (not same["scores"][-1]["n"] and same["anchor"] is None):
+        return []
+    out = ["", "## Same-day model (forward test)", "",
+           "On each market's own day the same-day model prices every bucket from the station's reports so far and "
+           "the newest hourly forecast. It is scored here against the market's mid price at the same moment, on "
+           "resolved markets whose book was tight then (lower is better). It can bet only once its own market "
+           "anchor beats the market price on held-out markets.", "",
+           "| Hours left | Predictions | Markets | Log loss: model / market | Brier: model / market |",
+           "|---|---:|---:|---|---|"]
+    out += [f"| {r['hours_left']} | {r['n']} | {r['markets']} | {_num(r['log_loss_model'])} / "
+            f"{_num(r['log_loss_market'])} | {_num(r['brier_model'])} / {_num(r['brier_market'])} |"
+            for r in same["scores"] if r["n"]]
+    a = same["anchor"]
+    if a is not None:
+        out += ["", f"Latest anchor fit {str(a['fitted_at'])[:16]} UTC on {a['n']} markets "
+                f"({a['n_train']} to fit, the newest {a['n_holdout']} to judge): "
+                f"**{'approved' if a['approved'] else 'not approved'}**, {a['reason']}."]
+    return out
+
+
+def model_updates(mu: dict | None) -> list[str]:
+    """The station bias/spread param sets: which is in use, and every retraining
+    and rollback (wxbot/learning/)."""
+    if not mu or not mu["sets"]:
+        return []
+    prod = mu["production"]
+    out = ["", "## Model updates", "",
+           (f"Station bias and error spread in use: **{prod['version']}** ({prod['origin']}, fitted on "
+            f"{prod['train_from']} to {prod['train_to']}, in production since {str(prod['deployed_at'])[:16]})."
+            if prod else "Station bias and error spread in use: the default spreads (no parameter set yet)."),
+           "A retrained set replaces it only if it scores better on markets none of the candidates was fitted on; "
+           "the replaced set is kept and put back if the new one then does reliably worse.", "",
+           "| Set | Status | Trained on | Out-of-sample markets | Brier production → set | "
+           "Log loss production → set | Decision |", "|---|---|---|---:|---|---|---|"]
+    for s in mu["sets"]:
+        ev = s["evaluation"] or {}
+        trained = f"{s['train_from']} to {s['train_to']}" if s["train_from"] else "–"
+        scores = (f"{_num(ev['brier_old'])} → {_num(ev['brier_new'])} | "
+                  f"{_num(ev['log_loss_old'])} → {_num(ev['log_loss_new'])}") if ev.get("n") else "– | –"
+        out.append(f"| {s['version']} | {s['status']} | {trained} | {ev.get('n', '–')} | {scores} | "
+                   f"{s['reason'] or ''} |")
+    return out
+
+
+def progress_text(p: dict | None) -> str:
+    """'day 4 of 30, ends ...', 'ended ...' or 'complete ...' for the experiment line."""
+    if not p or p["state"] == "none":
+        return ""
+    if p["state"] == "running":
+        return (f" · day {p['day']} of {p['planned_days']}, ends {p['ends_at'][:16].replace('T', ' ')} UTC"
+                if p["planned_days"] else f" · day {p['day']}")
+    when = (p["ended_at"] or p["ends_at"] or "")[:16].replace("T", " ")
+    if p["state"] == "ended":
+        return f" · **ended** {when} UTC after {p['planned_days']} days; {p['open_bets']} bets still to settle"
+    return (f" · **complete**: ended {when} UTC after {p['planned_days']} days, every bet settled "
+            f"{(p['completed_at'] or '')[:16].replace('T', ' ')} UTC")
+
+
+def operation_lines(op: dict | None) -> list[str]:
+    if not op or not op["cycles"]:
+        return []
+    missing = op["days_without_cycle"]
+    gap = op["longest_gap"]
+    errors = ", ".join(f"{k} {v}" for k, v in sorted(op["step_errors"].items(), key=lambda kv: -kv[1]))
+    return ["", "## Operation", "",
+            "How continuously the bot ran: each completed cycle collects data, predicts, bets and settles.", "",
+            "| Measure | Value |", "|---|---:|",
+            f"| Cycles completed | {op['cycles']} |",
+            f"| First / last cycle (UTC) | {str(op['first'])[:16]} / {str(op['last'])[:16]} |",
+            f"| Median time between cycles | {_num(op['median_gap_hours'], 1)} h |",
+            f"| Longest gap | {_num(op['longest_gap_hours'], 1)} h"
+            + (f" ({gap[0][:16].replace('T', ' ')} to {gap[1][:16].replace('T', ' ')})" if gap else "") + " |",
+            f"| Finished days without a cycle | {len(missing)} of {op['days']}"
+            + (f" ({', '.join(missing[:10])}{', ...' if len(missing) > 10 else ''})" if missing else "") + " |",
+            f"| Errors logged | {errors or 'none'} |"]
 
 
 def to_markdown(rep: dict) -> str:
@@ -91,7 +235,7 @@ def to_markdown(rep: dict) -> str:
         *([f"Experiment: **{exp['name']}** · started {str(exp['started_at'])[:16]} UTC · starting bankroll "
            f"${exp['initial_bankroll']:,.2f}" + (f" · code {exp['git_ref'][:12]}" if exp.get("git_ref") else "")
            + (f" (now {exp['code_ref'][:12]})" if exp.get("code_ref") and exp["code_ref"] != exp.get("git_ref")
-              else ""), ""]
+              else "") + progress_text(exp.get("progress")), ""]
           if exp else []),
         "## Verdict", "", *[f"- {n}" for n in rep["verdict"]], "",
         "## Results", "",
@@ -113,8 +257,9 @@ def to_markdown(rep: dict) -> str:
         f"| Brier on bets: model / market | {_num(ov['brier_bets'])} / {_num(ov['brier_market_on_bets'])} |",
         f"| Max drawdown | ${ov['max_drawdown']:.2f} ({_pct(ov['max_drawdown_pct'])}) |", "",
         "## Calibration of all predictions on resolved markets", "",
-        f"Markets: {cal['n']} · Brier model {_num(cal['brier_model'])} · market {_num(cal['brier_market'])} · "
-        f"log loss {_num(cal.get('log_loss_model'))} · expected calibration error {_num(cal.get('ece_model'))}", "",
+        f"Markets: {cal['n']} · Brier model {_num(cal['brier_model'])} · log loss {_num(cal.get('log_loss_model'))} · "
+        f"expected calibration error {_num(cal.get('ece_model'))} · on the {cal['n_market']} liquid markets, Brier "
+        f"model {_num(cal['brier_model_on_market'])} vs market {_num(cal['brier_market'])}", "",
         "| Predicted bin | n | Mean predicted | Observed |", "|---|---:|---:|---:|",
         *[f"| {b['bin']} | {b['n']} | {_pct(b['mean_pred'])} | {_pct(b['observed'])} |" for b in cal["bins"]],
     ]
@@ -150,17 +295,37 @@ def to_markdown(rep: dict) -> str:
                   f"{_num(c['log_loss_before'])} → {_num(c['log_loss_after'])} | "
                   f"{'yes' if c['approved'] else 'no: ' + (c['reason'] or '')} | {'yes' if c['selected'] else ''} |"
                   for c in cals]
+    lines += anchor_section(rep.get("market_anchor"))
+    lines += same_day_section(rep.get("same_day"))
+    lines += model_updates(rep.get("model_updates"))
     comp = rep.get("model_comparison")
     if comp:
         lines += ["", "## Model comparison", "",
                   f"Each model's prediction from the same cycle as the production model's last prediction made "
                   f"{comp['min_lead_days']}+ day ahead, on {comp['n_markets']} resolved markets. Each row is scored "
-                  "on the markets that model predicted, and the production columns on exactly those markets. "
-                  "Lower is better.", "",
+                  "on the markets that model predicted, and the production columns on exactly those markets; the "
+                  "market price only on markets that passed the liquidity check, since a thin market's mid is a "
+                  "placeholder. Lower is better.", "",
                   "| Model | Role | Markets | Brier | Log loss | Production Brier | Production log loss |",
                   "|---|---|---:|---:|---:|---:|---:|"]
         lines += [f"| {m['model']} | {m['role']} | {m['n']} | {_num(m['brier'])} | {_num(m['log_loss'])} | "
                   f"{_num(m['production_brier'])} | {_num(m['production_log_loss'])} |" for m in comp["models"]]
+    err = rep.get("errors")
+    if err and err["n"]:
+        lines += ["", "## Recurring weaknesses", "",
+                  f"Where the model was wrong in a consistent way, on {err['n']} resolved markets and "
+                  f"{err['bets']['n']} settled bets: groups with at least {err['min_group']} markets "
+                  f"({err['min_bet_group']} bets) and a gap of at least {err['flag_z']:g} standard errors. "
+                  "The dashboard's Learning tab has every breakdown.", ""]
+        if err["weaknesses"]:
+            lines += ["| Where | Breakdown | Group | n | Weakness | Evidence |", "|---|---|---|---:|---|---|"]
+            lines += [f"| {w['scope']} | {w['dimension']} | {w['group']} | {w['n']} | {w['flag']} | {w['detail']} |"
+                      for w in err["weaknesses"][:12]]
+        else:
+            lines.append("None flagged yet.")
+        counts = ", ".join(f"{c['class']} {c['n']}" for c in err["classes"])
+        lines += ["", f"Error classes: {counts}."]
+    lines += operation_lines(rep.get("operation"))
     days = by_day(rep.get("bets") or [])
     if days:
         lines += ["", "## Results by market day", "",

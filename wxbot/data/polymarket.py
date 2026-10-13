@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 
 from wxbot.data.http import get_json, make_session
 from wxbot.data.stations import get_station
@@ -24,7 +24,8 @@ TITLE_RE = re.compile(
     r"^(?P<kind>highest|lowest) temperature in (?P<city>.+?) on (?P<month>[a-z]+) (?P<day>\d{1,2})"
     r"(?:,? (?P<year>\d{4}))?\??$", re.I)
 # the ICAO code is the first all-caps path segment: .../daily/cn/jinan/ZSJN, .../daily/us/ny/new-york-city/KLGA
-WU_RE = re.compile(r"(?i:wunderground\.com/history/[a-z]+/)(?:[^/\s]+/)*?(?P<code>[A-Z][A-Z0-9]{3})(?=[/?#\s]|\.?$|\.\s)")
+WU_RE = re.compile(r"(?i:wunderground\.com/history/[a-z]+/)(?:[^/\s]+/)*?"
+                   r"(?P<code>[A-Z][A-Z0-9]{3})(?=[/?#\s]|\.?$|\.\s)")
 NOAA_RE = re.compile(r"[?&]site=(?P<code>[a-z0-9]{3,4})\b", re.I)
 RANGE_RE = re.compile(r"(-?\d+(?:\.\d+)?)\s*°?\s*(?:-|–|to)\s*(-?\d+(?:\.\d+)?)\s*°\s*([CF])", re.I)
 SINGLE_RE = re.compile(r"(-?\d+(?:\.\d+)?)\s*°\s*([CF])", re.I)
@@ -114,7 +115,7 @@ def parse_time(value) -> datetime | None:
         dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
     except ValueError:
         return None
-    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
 
 
 def parse_bucket(label: str) -> Bucket | None:
@@ -156,7 +157,7 @@ def parse_title(title: str, end_date: datetime | None) -> tuple[str | None, str 
     if m.group("year"):
         year = int(m.group("year"))
     else:
-        ref = (end_date or datetime.now(timezone.utc)).date()
+        ref = (end_date or datetime.now(UTC)).date()
         # pick the year that puts the date closest to the market's end date
         year = min((ref.year - 1, ref.year, ref.year + 1),
                    key=lambda y: abs((_safe_date(y, month, day) - ref).days))
@@ -186,6 +187,8 @@ def _rule_date(rest: str) -> tuple[str | None, str | None]:
     if not m:
         return None, rest.strip()[:40] or None
     month = _month(m.group("m1") or m.group("m2"))
+    if month is None:
+        return None, m.group(0).strip()[3:]
     year = int(m.group("yyyy")) if m.group("yyyy") else 2000 + int(m.group("yy"))
     try:
         return date(year, month, int(m.group("d1") or m.group("d2"))).isoformat(), m.group(0).strip()[3:]
@@ -284,11 +287,14 @@ def resolved_outcome(market: dict) -> str | None:
         return None
     prices = [_f(p) for p in _jlist(market.get("outcomePrices"))]
     outcomes = [str(o).lower() for o in _jlist(market.get("outcomes"))]
-    if len(prices) != 2 or None in prices or outcomes[:2] != ["yes", "no"]:
+    if len(prices) != 2 or outcomes[:2] != ["yes", "no"]:
         return None
-    if prices[0] >= 0.99 and prices[1] <= 0.01:
+    yes, no = prices
+    if yes is None or no is None:
+        return None
+    if yes >= 0.99 and no <= 0.01:
         return "YES"
-    if prices[1] >= 0.99 and prices[0] <= 0.01:
+    if no >= 0.99 and yes <= 0.01:
         return "NO"
     return None
 
@@ -348,6 +354,12 @@ def parse_market(event: dict, market: dict, kinds: list[str] | None = None) -> P
     return pm
 
 
+def price_changes(series: list[tuple[datetime, float]]) -> list[tuple[datetime, float]]:
+    """The points of a price series where the price changed (a price holds until
+    the next point); the first and last points are always kept."""
+    return [pt for i, pt in enumerate(series) if i == 0 or pt[1] != series[i - 1][1] or i == len(series) - 1]
+
+
 @dataclass
 class BookLevel:
     price: float
@@ -361,8 +373,9 @@ class PolymarketClient:
 
     def list_events(self, lookback_days: int = 2, page_size: int = 100, max_pages: int = 20) -> list[dict]:
         """Open daily-temperature events whose end date is recent or upcoming."""
-        since = (datetime.now(timezone.utc) - timedelta(days=lookback_days)).strftime("%Y-%m-%dT%H:%M:%SZ")
-        events, offset = [], 0
+        since = (datetime.now(UTC) - timedelta(days=lookback_days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        events: list[dict] = []
+        offset = 0
         for _ in range(max_pages):
             page = get_json(self.session, f"{GAMMA}/events", {
                 "tag_slug": self.tag_slug, "closed": "false", "end_date_min": since,
@@ -371,6 +384,30 @@ class PolymarketClient:
                 break
             events.extend(page)
             if len(page) < page_size:
+                break
+            offset += page_size
+        return events
+
+    def list_closed_events(self, start: date, end: date, page_size: int = 100, max_pages: int = 500) -> list[dict]:
+        """Closed daily-temperature events whose end date is within a day before
+        `start` to two days after `end` (UTC): every event of those days, traded
+        or not, for backtests. Pages are read in end-date order and reading stops
+        past the window, even if the API ignored end_date_max."""
+        lo = datetime.combine(start - timedelta(days=1), datetime.min.time(), UTC)
+        hi = datetime.combine(end + timedelta(days=2), datetime.min.time(), UTC)
+        fmt = "%Y-%m-%dT%H:%M:%SZ"
+        events: list[dict] = []
+        offset = 0
+        for _ in range(max_pages):
+            page = get_json(self.session, f"{GAMMA}/events", {
+                "tag_slug": self.tag_slug, "closed": "true", "end_date_min": lo.strftime(fmt),
+                "end_date_max": hi.strftime(fmt), "limit": page_size, "offset": offset, "order": "endDate",
+                "ascending": "true"})
+            if not isinstance(page, list) or not page:
+                break
+            ends = [parse_time(e.get("endDate")) for e in page]
+            events.extend(e for e, t in zip(page, ends) if t is not None and lo <= t <= hi)
+            if len(page) < page_size or any(t is not None and t > hi for t in ends):
                 break
             offset += page_size
         return events
@@ -391,7 +428,7 @@ class PolymarketClient:
         data = get_json(self.session, f"{CLOB}/prices-history", {
             "market": token_id, "startTs": int(start.timestamp()), "endTs": int(end.timestamp()),
             "fidelity": fidelity_min})
-        return [(datetime.fromtimestamp(int(pt["t"]), timezone.utc), float(pt["p"]))
+        return [(datetime.fromtimestamp(int(pt["t"]), UTC), float(pt["p"]))
                 for pt in (data or {}).get("history") or []]
 
     def get_asks(self, token_id: str) -> list[BookLevel]:

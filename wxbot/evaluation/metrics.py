@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import math
+from datetime import datetime
 import random
 import statistics
 from collections import defaultdict
+from typing import Any
 
 from sqlalchemy import and_, func, or_, select
 
@@ -15,6 +17,22 @@ from wxbot.db import (
 
 # rows from before v2 M4 have no role: they were all made by the production model
 PRODUCTION = or_(predictions.c.role.is_(None), predictions.c.role == "production")
+
+
+def liquid(rule_results) -> bool:
+    """Whether a signal's market passed the bot's liquidity check (strategy.min_liquidity_usd)."""
+    return any(rr.get("rule") == "liquidity" and rr.get("passed") for rr in rule_results or [])
+
+
+def market_yes(sig: dict | None) -> float | None:
+    """The market's YES probability from a signal (its mid price): the benchmark
+    the model is compared against. None without a price, and for a market that
+    failed the liquidity check: there the mid of a near-empty book is a
+    placeholder (often 0.34 or 0.40), not a forecast, and counting it makes any
+    model look better than the market."""
+    if not sig or sig.get("market_prob") is None or not liquid(sig.get("rule_results")):
+        return None
+    return sig["market_prob"] if sig["side"] == "YES" else 1 - sig["market_prob"]
 LOG_LOSS_EPS = 1e-3  # probabilities are clipped to [eps, 1 - eps] so one certain miss is not infinite
 
 
@@ -54,7 +72,7 @@ def ece(probs: list[float], outcomes: list[int], n_bins: int = 10) -> float | No
 
 
 def calibration_bins(probs: list[float], outcomes: list[int], n_bins: int = 10) -> list[dict]:
-    bins = [[] for _ in range(n_bins)]
+    bins: list[list[tuple[float, int]]] = [[] for _ in range(n_bins)]
     for p, o in zip(probs, outcomes):
         bins[min(int(p * n_bins), n_bins - 1)].append((p, o))
     out = []
@@ -81,9 +99,10 @@ def bootstrap_roi_ci(stakes: list[float], pnls: list[float], n: int = 2000, seed
     return rois[int(0.025 * n)], rois[int(0.975 * n) - 1]
 
 
-def overview(db: Database, initial: float) -> dict:
+def overview(db: Database, initial: float, now: datetime | None = None) -> dict:
     from wxbot.execution.portfolio import bankroll
-    from wxbot.experiment import current
+    from wxbot.db import utcnow
+    from wxbot.experiment import current, progress
     bets = db.rows(select(paper_bets).order_by(paper_bets.c.id))
     settled = [b for b in bets if b["status"] in ("WON", "LOST")]
     wins = [b for b in settled if b["status"] == "WON"]
@@ -110,7 +129,7 @@ def overview(db: Database, initial: float) -> dict:
     return {
         "mode": "PAPER TRADING", "real_money": 0.0,
         "experiment": exp and {**{k: exp[k] for k in ("name", "initial_bankroll", "started_at", "git_ref")},
-                               "code_ref": db.get_state("code_ref")},
+                               "code_ref": db.get_state("code_ref"), "progress": progress(db, exp, now or utcnow())},
         "starting_bankroll": initial, "cash": bank.cash, "available_cash": bank.cash,
         "open_exposure": bank.open_exposure, "market_value": bank.market_value,
         "unrealized_pnl": bank.unrealized_pnl, "book_equity": bank.book_equity,
@@ -135,6 +154,82 @@ def overview(db: Database, initial: float) -> dict:
     }
 
 
+def portfolio_view(db: Database, cfg, now, initial: float) -> dict:
+    """Open positions with what each could pay and what it risks, and how much
+    of every exposure limit is in use (the limits the engine sizes bets with)."""
+    from wxbot.calibration.fit import day_end
+    from wxbot.execution.portfolio import bankroll, daily_realized_pnl
+    risk = cfg.risk
+    bank = bankroll(db, initial)
+    equity = bank.equity
+    b, mk = paper_bets.c, markets.c
+    info = {r["id"]: r for r in db.rows(
+        select(b.id, b.opened_at, b.event_id, b.confidence, b.model_prob, b.market_prob, b.edge, mk.question,
+               mk.event_title, mk.bucket_label, mk.city, mk.station, mk.local_date, mk.kind)
+        .join(markets, mk.id == b.market_id).where(b.status == "OPEN"))}
+    positions: list[dict[str, Any]] = []
+    for p in bank.positions:
+        r = info.get(p.bet_id, {})
+        conf = r.get("confidence") if r.get("confidence") is not None else r.get("model_prob")
+        try:
+            hours_left = (day_end(r["station"], r["local_date"]) - now).total_seconds() / 3600
+        except Exception:  # unknown station or date
+            hours_left = None
+        positions.append({
+            "bet_id": p.bet_id, "market_id": p.market_id, "question": r.get("question"),
+            "event_title": r.get("event_title"), "bucket_label": r.get("bucket_label"), "city": r.get("city"),
+            "station": r.get("station"), "local_date": r.get("local_date"), "opened_at": r.get("opened_at"),
+            "side": p.side, "shares": p.shares, "entry_price": p.entry_price, "cost": p.stake,
+            "mark_price": p.mark_price, "marked_by": p.marked_by, "value": p.value, "unrealized_pnl": p.unrealized_pnl,
+            # each share pays $1 if the side held wins
+            "potential_payout": p.shares, "max_profit": p.shares - p.stake, "max_loss": p.stake,
+            "pct_of_equity": p.stake / equity if equity > 0 else None,
+            "confidence": conf, "expected_pnl": None if conf is None else conf * p.shares - p.stake,
+            "market_prob": r.get("market_prob"), "edge": r.get("edge"),
+            "hours_left": None if hours_left is None else round(hours_left, 1),
+        })
+
+    def groups(key, label):
+        out: dict = {}
+        for p in positions:
+            k = key(p)
+            g = out.setdefault(k, {"group": label(p), "n": 0, "cost": 0.0, "value": 0.0})
+            g["n"] += 1
+            g["cost"] += p["cost"]
+            g["value"] += p["value"]
+        return sorted(out.values(), key=lambda g: -g["cost"])
+
+    events = groups(lambda p: info.get(p["bet_id"], {}).get("event_id"), lambda p: p["event_title"])
+    city_days = groups(lambda p: (p["station"], p["local_date"]),
+                       lambda p: f"{p['city'] or p['station']} {p['local_date']}")
+    daily = daily_realized_pnl(db, now)
+
+    def cap(name, used, pct, base, group=None):
+        limit = pct * base
+        return {"limit_name": name, "group": group, "used": used, "limit": limit, "pct": pct,
+                "share": used / limit if limit > 0 else None}
+    caps = [
+        cap("Total open exposure", bank.open_exposure, risk.max_open_exposure_pct, equity),
+        cap("Largest event", events[0]["cost"] if events else 0.0, risk.max_event_exposure_pct, equity,
+            events[0]["group"] if events else None),
+        cap("Largest city-day (high and low together)", city_days[0]["cost"] if city_days else 0.0,
+            risk.max_station_day_exposure_pct, equity, city_days[0]["group"] if city_days else None),
+        cap("Realized loss today (UTC)", max(0.0, -daily), risk.daily_loss_limit_pct, initial),
+    ]
+    payout = sum(p["potential_payout"] for p in positions)
+    expected = [p["expected_pnl"] for p in positions if p["expected_pnl"] is not None]
+    return {
+        "equity": equity, "cash": bank.cash, "starting_bankroll": initial,
+        "totals": {"n": len(positions), "cost": bank.open_exposure, "value": bank.market_value,
+                   "unrealized_pnl": bank.unrealized_pnl, "potential_payout": payout,
+                   "max_profit": payout - bank.open_exposure,
+                   "expected_pnl": sum(expected) if expected else None},
+        # what equity would be if every open position lost / won
+        "scenarios": {"all_lose": bank.cash, "all_win": bank.cash + payout},
+        "caps": caps, "by_event": events, "by_city_day": city_days, "positions": positions,
+    }
+
+
 def prediction_calibration(db: Database, min_lead_days: int = 1) -> dict:
     """Calibration over ALL resolved markets (not only bets): the model's last
     prediction made at least `min_lead_days` ahead, versus what happened."""
@@ -145,13 +240,14 @@ def prediction_calibration(db: Database, min_lead_days: int = 1) -> dict:
     probs = [x["p_yes"] for x in rows]
     cal = [x["p_yes"] if x["calibrated_prob"] is None else x["calibrated_prob"] for x in rows]
     outs = [1 if x["outcome"] == "YES" else 0 for x in rows]
-    # market benchmark: mid-implied YES probability on the signal made from the same prediction
+    # market benchmark: mid-implied YES probability on the signal made from the same prediction, liquid markets
     s = signals.c
     mk = {}
-    for x in db.rows(select(s.market_id, s.side, s.market_prob).join(latest, latest.c.pid == s.prediction_id)):
-        if x["market_prob"] is not None:
-            mk[x["market_id"]] = x["market_prob"] if x["side"] == "YES" else 1 - x["market_prob"]
-    paired = [(mk[x["market_id"]], o) for x, o in zip(rows, outs) if x["market_id"] in mk]
+    for x in db.rows(select(s.market_id, s.side, s.market_prob, s.rule_results)
+                     .join(latest, latest.c.pid == s.prediction_id)):
+        if (m := market_yes(x)) is not None:
+            mk[x["market_id"]] = m
+    paired = [(mk[x["market_id"]], c, o) for x, c, o in zip(rows, cal, outs) if x["market_id"] in mk]
     return {
         "n": len(rows), "brier_model": brier(probs, outs), "log_loss_model": log_loss(probs, outs),
         "ece_model": ece(probs, outs),
@@ -159,7 +255,11 @@ def prediction_calibration(db: Database, min_lead_days: int = 1) -> dict:
         "n_calibrated": sum(x["calibrator_version"] not in (None, "identity") for x in rows),
         "brier_calibrated": brier(cal, outs), "log_loss_calibrated": log_loss(cal, outs),
         "ece_calibrated": ece(cal, outs), "bins_calibrated": calibration_bins(cal, outs),
-        "brier_market": brier([a for a, _ in paired], [o for _, o in paired]), "n_market": len(paired),
+        # model (as used) and market on the same liquid markets
+        "brier_market": brier([m for m, _, _ in paired], [o for _, _, o in paired]), "n_market": len(paired),
+        "brier_model_on_market": brier([c for _, c, _ in paired], [o for _, _, o in paired]),
+        "log_loss_market": log_loss([m for m, _, _ in paired], [o for _, _, o in paired]),
+        "log_loss_model_on_market": log_loss([c for _, c, _ in paired], [o for _, _, o in paired]),
         "bins": calibration_bins(probs, outs),
     }
 
@@ -170,6 +270,71 @@ def decision_predictions(min_lead_days: int = 1):
     p, r = predictions.c, market_resolutions.c
     return (select(func.max(p.id).label("pid")).join(market_resolutions, r.market_id == p.market_id)
             .where(p.lead_days >= min_lead_days, PRODUCTION).group_by(p.market_id).subquery())
+
+
+def resolved_rows(db: Database, min_lead_days: int = 1, per_lead: bool = False) -> list[dict]:
+    """One row per resolved market: the production model's decision prediction
+    (its last made `min_lead_days`+ days ahead), the market, the outcome `y`, the
+    probability the rules used (`used`: calibrated, or raw without a calibrator),
+    and the market's mid-implied YES probability (`market_yes`) and liquidity from
+    the signal made from that same prediction (None for a market that failed the
+    liquidity check: see market_yes()). per_lead=True instead gives one
+    row per market and lead time: the last prediction made at each lead."""
+    p, r, mk, s = predictions.c, market_resolutions.c, markets.c, signals.c
+    if per_lead:
+        latest = (select(func.max(p.id).label("pid")).join(market_resolutions, r.market_id == p.market_id)
+                  .where(PRODUCTION, p.lead_days.is_not(None)).group_by(p.market_id, p.lead_days).subquery())
+    else:
+        latest = decision_predictions(min_lead_days)
+    rows = db.rows(select(p.id.label("prediction_id"), p.market_id, p.ts, p.model_version, p.lead_days, p.mu_c,
+                          p.sigma_c, p.p_yes, p.calibrated_prob, p.calibrator_version, p.inputs, mk.event_id,
+                          mk.event_title, mk.question, mk.bucket_label, mk.city, mk.station, mk.kind, mk.local_date,
+                          mk.unit, mk.bucket_lo, mk.bucket_hi, r.outcome)
+                   .join(latest, latest.c.pid == p.id).join(markets, mk.id == p.market_id)
+                   .join(market_resolutions, r.market_id == p.market_id).order_by(mk.local_date, p.market_id, p.id))
+    sigs = {x["prediction_id"]: x for x in db.rows(
+        select(s.prediction_id, s.side, s.market_prob, s.rule_results).join(latest, latest.c.pid == s.prediction_id)
+        .order_by(s.id))}
+    for x in rows:
+        x["y"] = 1 if x["outcome"] == "YES" else 0
+        x["used"] = x["p_yes"] if x["calibrated_prob"] is None else x["calibrated_prob"]
+        sig = sigs.get(x["prediction_id"]) or {}
+        x["market_yes"] = market_yes(sig)
+        x["liquidity"] = next((rr.get("value") for rr in sig.get("rule_results") or []
+                               if rr.get("rule") == "liquidity"), None)
+    return rows
+
+
+def daily_scores(rows: list[dict]) -> list[dict]:
+    """Per target day, on the markets that had a market price: Brier score and
+    log loss of the model (raw and as used) and of the market price, and how
+    often the bucket each thought most likely won (events whose buckets all
+    had a price and exactly one of which resolved YES)."""
+    by_day: dict[str, list[dict]] = defaultdict(list)
+    for x in rows:
+        if x["market_yes"] is not None:
+            by_day[x["local_date"]].append(x)
+    out = []
+    for day in sorted(by_day):
+        xs = by_day[day]
+        ys = [x["y"] for x in xs]
+        events: dict[str, list[dict]] = defaultdict(list)
+        for x in xs:
+            events[x["event_id"]].append(x)
+        whole = [ev for ev in events.values() if len(ev) >= 2 and sum(x["y"] for x in ev) == 1]
+        top = lambda ev, k: max(ev, key=lambda r: r[k])["y"]  # noqa: E731
+        out.append({
+            "day": day, "n": len(xs),
+            "brier_model": brier([x["p_yes"] for x in xs], ys), "brier_used": brier([x["used"] for x in xs], ys),
+            "brier_market": brier([x["market_yes"] for x in xs], ys),
+            "log_loss_model": log_loss([x["p_yes"] for x in xs], ys),
+            "log_loss_used": log_loss([x["used"] for x in xs], ys),
+            "log_loss_market": log_loss([x["market_yes"] for x in xs], ys),
+            "n_events": len(whole),
+            "top_bucket_model": statistics.fmean(top(ev, "p_yes") for ev in whole) if whole else None,
+            "top_bucket_market": statistics.fmean(top(ev, "market_yes") for ev in whole) if whole else None,
+        })
+    return out
 
 
 def _scores(probs: dict[str, float], outcome: dict[str, int], ids) -> tuple:
@@ -203,9 +368,10 @@ def model_comparison(db: Database, min_lead_days: int = 1) -> dict:
             if x["calibrator_version"] not in (None, "identity"):
                 calibrated[x["model_version"] + " calibrated"][x["market_id"]] = x["calibrated_prob"]
     market: dict[str, float] = {}
-    for x in db.rows(select(s.market_id, s.side, s.market_prob).join(moment, moment.c.pid == s.prediction_id)):
-        if x["market_prob"] is not None:
-            market[x["market_id"]] = x["market_prob"] if x["side"] == "YES" else 1 - x["market_prob"]
+    for x in db.rows(select(s.market_id, s.side, s.market_prob, s.rule_results)
+                     .join(moment, moment.c.pid == s.prediction_id)):
+        if (m := market_yes(x)) is not None:
+            market[x["market_id"]] = m
     roles = {x["version"]: x["role"] for x in db.rows(select(model_versions.c.version, model_versions.c.role))}
     out = []
     for version, probs in sorted({**by_model, **calibrated}.items()):
@@ -245,6 +411,7 @@ def performance_series(db: Database, initial: float) -> dict:
         "prediction_calibration": prediction_calibration(db),
         "model_comparison": model_comparison(db),
         "calibrators": latest_calibrators(db),
+        "daily_scores": daily_scores(resolved_rows(db)),
     }
 
 
@@ -260,4 +427,4 @@ def latest_calibrators(db: Database) -> list[dict]:
 
 
 def market_count(db: Database) -> int:
-    return db.one(select(func.count().label("n")).select_from(markets).where(markets.c.tradeable.is_(True)))["n"]
+    return db.agg(select(func.count().label("n")).select_from(markets).where(markets.c.tradeable.is_(True)))["n"]

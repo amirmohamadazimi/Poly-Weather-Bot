@@ -16,7 +16,7 @@ import io
 import logging
 import time
 from collections import defaultdict
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from typing import Protocol
 from zoneinfo import ZoneInfo
 
@@ -52,7 +52,7 @@ def fetch_hourly(session, url: str, params: dict, models: list[str]) -> tuple[di
             raise
         log.warning("%s rejected model list (%s); retrying per model", url, exc.response.text[:200])
     merged: dict = {}
-    data: dict = {}
+    data = {}
     for m in models:
         try:
             data = get_json(session, url, {**params, "models": m})
@@ -92,7 +92,9 @@ class ForecastSource(Protocol):
 
     def fetch(self, station: Station, days: int = 5) -> tuple[dict, dict]:
         """-> ({kind: {local_date: {model: value_c}}}, meta). meta may carry
-        "model_runs": {model: ISO time of the run the values came from}."""
+        "model_runs": {model: ISO time of the run the values came from}. An
+        optional "hourly" kind, {local_date: {"time": [local ISO hours],
+        "values": {model: [value_c or None]}}}, feeds the same-day model."""
         ...
 
 
@@ -120,7 +122,7 @@ class OpenMeteoForecast:
                 try:
                     ts = get_json(self.session, OPEN_METEO_META.format(dataset=dataset)).get(
                         "last_run_initialisation_time")
-                    run = datetime.fromtimestamp(int(ts), timezone.utc).isoformat() if ts else None
+                    run = datetime.fromtimestamp(int(ts), UTC).isoformat() if ts else None
                 except Exception as exc:  # noqa: BLE001 - metadata is optional
                     log.warning("run time for %s unavailable: %s", m, exc)
             self._runs[m] = (time.monotonic(), run)
@@ -128,7 +130,8 @@ class OpenMeteoForecast:
         return out
 
     def fetch(self, station: Station, days: int = 5) -> tuple[dict, dict]:
-        """-> ({kind: {local_date: {model: value_c}}}, request_meta)."""
+        """-> ({kind: {local_date: {model: value_c}}, "hourly": {local_date: {"time": [...],
+        "values": {model: [...]}}}}, request_meta)."""
         params = {
             "latitude": station.lat, "longitude": station.lon, "hourly": "temperature_2m",
             "timezone": station.tz, "forecast_days": days, "past_days": 1, "temperature_unit": "celsius",
@@ -137,13 +140,19 @@ class OpenMeteoForecast:
         params["models"] = ",".join(self.models)
         times = hourly.get("time") or []
         out: dict[str, dict] = {"high": defaultdict(dict), "low": defaultdict(dict)}
+        hours: dict[str, list[int]] = defaultdict(list)   # local date -> indexes of its hours
+        for i, t in enumerate(times):
+            hours[t[:10]].append(i)
+        by_hour: dict[str, dict] = {d: {"time": [times[i] for i in idx], "values": {}} for d, idx in hours.items()}
         for model, series in split_model_series(hourly, "temperature_2m", self.models).items():
             for kind in ("high", "low"):
                 for d, v in daily_extreme(times, series, kind).items():
                     out[kind][d][model] = round(v, 2)
+            for d, idx in hours.items():
+                by_hour[d]["values"][model] = [None if series[i] is None else round(float(series[i]), 2) for i in idx]
         meta = {"url": OPEN_METEO, "params": params, "model_runs": self.model_runs(),
                 "generationtime_ms": data.get("generationtime_ms"), "timezone": data.get("timezone")}
-        return {k: dict(v) for k, v in out.items()}, meta
+        return {**{k: dict(v) for k, v in out.items()}, "hourly": by_hour}, meta
 
 
 class OpenMeteoPreviousRuns:
@@ -174,7 +183,8 @@ class OpenMeteoPreviousRuns:
 
 
 class IEMObservations:
-    """Station daily high/low in degC from archived METARs (Iowa Environmental Mesonet)."""
+    """Station daily high/low in degC from archived METARs (Iowa Environmental
+    Mesonet), and the individual reports of the day so far for the same-day model."""
     source = "iem-metar"
 
     def __init__(self, session=None):
@@ -188,8 +198,17 @@ class IEMObservations:
     def fetch(self, station: Station, start: date, end: date) -> dict[str, dict[str, tuple[float, int]]]:
         """-> {kind: {local_date: (value_c, n_reports)}} for local days start..end."""
         tz = ZoneInfo(station.tz)
-        utc_start = datetime.combine(start, datetime.min.time(), tz).astimezone(timezone.utc) - timedelta(hours=1)
-        utc_end = datetime.combine(end + timedelta(days=1), datetime.min.time(), tz).astimezone(timezone.utc) + timedelta(hours=1)
+        utc_start = datetime.combine(start, datetime.min.time(), tz).astimezone(UTC) - timedelta(hours=1)
+        utc_end = (datetime.combine(end + timedelta(days=1), datetime.min.time(), tz).astimezone(UTC)
+                   + timedelta(hours=1))
+        return self.parse_csv(self._get(station, utc_start, utc_end), station, start, end)
+
+    def fetch_reports(self, station: Station, start: datetime, end: datetime) -> list[tuple[datetime, float]]:
+        """The station's reports from `start` to `end` (UTC): [(report time, temp_c)], oldest first."""
+        text = self._get(station, start, end + timedelta(hours=1))   # the API's end is a whole hour
+        return [(t, v) for t, v in self.parse_reports(text) if start <= t <= end]
+
+    def _get(self, station: Station, utc_start: datetime, utc_end: datetime) -> str:
         params = [
             ("station", self.iem_id(station.code)), ("data", "tmpf"),
             ("year1", utc_start.year), ("month1", utc_start.month), ("day1", utc_start.day),
@@ -201,21 +220,28 @@ class IEMObservations:
         ]
         resp = self.session.get(IEM_ASOS, params=params, timeout=(10, 60))
         resp.raise_for_status()
-        return self.parse_csv(resp.text, station, start, end)
+        return resp.text
 
     @staticmethod
-    def parse_csv(text: str, station: Station, start: date, end: date) -> dict:
-        tz = ZoneInfo(station.tz)
-        by_day: dict[str, list[float]] = defaultdict(list)
+    def parse_reports(text: str) -> list[tuple[datetime, float]]:
+        """IEM CSV -> [(report time UTC, temp_c)], oldest first; missing values skipped."""
+        out = []
         for row in csv.DictReader(io.StringIO(text)):
             raw = (row.get("tmpf") or "").strip()
             if raw in ("", "M", "T"):
                 continue
             try:
-                ts = datetime.strptime(row["valid"], "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
-                temp_c = (float(raw) - 32.0) * 5.0 / 9.0
+                ts = datetime.strptime(row["valid"], "%Y-%m-%d %H:%M").replace(tzinfo=UTC)
+                out.append((ts, (float(raw) - 32.0) * 5.0 / 9.0))
             except (KeyError, ValueError):
                 continue
+        return sorted(out)
+
+    @staticmethod
+    def parse_csv(text: str, station: Station, start: date, end: date) -> dict:
+        tz = ZoneInfo(station.tz)
+        by_day: dict[str, list[float]] = defaultdict(list)
+        for ts, temp_c in IEMObservations.parse_reports(text):
             local_day = ts.astimezone(tz).date()
             if start <= local_day <= end:
                 by_day[local_day.isoformat()].append(temp_c)

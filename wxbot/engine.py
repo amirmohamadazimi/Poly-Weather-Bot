@@ -1,7 +1,8 @@
 """The paper-trading cycle:
 
-collect markets -> collect forecasts -> predict -> signal -> paper bet
--> check resolutions -> settle -> snapshot bankroll.
+collect markets -> collect forecasts (and today's station reports) -> predict
+-> signal -> paper bet -> check resolutions -> settle -> learn
+(wxbot/learning/) -> snapshot bankroll.
 
 Each step is isolated: a failure is logged to system_events and the rest of
 the cycle still runs.
@@ -10,27 +11,30 @@ from __future__ import annotations
 
 import logging
 import time
+from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
-from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import requests
-from sqlalchemy import and_, desc, exists, func, or_, select, update
+from sqlalchemy import and_, desc, exists, func, select, update
 
-from wxbot.calibration.fit import active_calibrator, fit_round
-from wxbot.data.polymarket import Bucket, ParsedMarket, parse_time, resolved_outcome
+from wxbot.calibration import anchor as market_anchor
+from wxbot.calibration.fit import _utc, active_calibrator, fit_round
+from wxbot.data.polymarket import Bucket, ParsedMarket, parse_time, price_changes, resolved_outcome
 from wxbot.data.stations import get_station
 from wxbot.data.validation import validate_forecast, validate_observation
 from wxbot.db import (
-    Database, calibration_params, forecast_snapshots, forecast_values, market_criteria_history, market_price_history,
-    market_snapshots, markets, paper_bets, predictions, signals, utcnow, weather_observations,
+    Database, forecast_snapshots, forecast_values, market_criteria_history, market_price_history, market_snapshots,
+    markets, paper_bets, predictions, signals, station_reports, utcnow, weather_observations,
 )
 from wxbot.execution import portfolio
 from wxbot.execution.paper import BrokerRefused
-from wxbot.experiment import ensure_experiment
-from wxbot.features import FEATURE_SET, build_features, climatology_window, observed_history
+from wxbot.experiment import check_end, ensure_experiment, is_open
+from wxbot.features import FEATURE_SET, Features, build_features, climatology_window, observed_history
+from wxbot.learning import learn, outcomes, retrain
+from wxbot.learning import params as param_sets
+from wxbot.model import nowcast as same_day
 from wxbot.model.base import Calibration
-from wxbot.model.normal import default_calibration
 from wxbot.model.registry import sync_registry
 from wxbot.strategy import rules
 
@@ -50,7 +54,7 @@ def _parse_time(value) -> datetime | None:
     if not value:
         return None
     t = value if isinstance(value, datetime) else datetime.fromisoformat(value)
-    return t if t.tzinfo else t.replace(tzinfo=timezone.utc)
+    return t if t.tzinfo else t.replace(tzinfo=UTC)
 
 
 VARIABLES = {"high": "temperature_2m_max", "low": "temperature_2m_min"}
@@ -66,7 +70,7 @@ CLOB_DOWN = (requests.ConnectionError, requests.Timeout, requests.exceptions.Ret
 
 class Engine:
     def __init__(self, cfg, db: Database, polymarket, forecaster, observer, predictor, broker, sizer,
-                 clock=utcnow, shadows=()):
+                 clock=utcnow, shadows=(), history=None, nowcast=None):
         self.cfg = cfg
         self.db = db
         self.pm = polymarket
@@ -74,12 +78,14 @@ class Engine:
         self.observer = observer
         self.predictor = predictor
         self.shadows = list(shadows)  # priced and stored on every market, never traded
+        self.nowcast = nowcast        # same-day model (wxbot/model/nowcast.py); None = off
         self.broker = broker
         self.sizer = sizer
+        self.history = history    # past forecasts (Open-Meteo Previous Runs) for retraining; None = no retraining
         self.clock = clock
         v = cfg.get("validation")
         self.validation = SimpleNamespace(**(v.as_dict() if v else {}), min_models=cfg.weather.min_models)
-        for change in sync_registry(db, predictor, self.shadows, self.clock()):
+        for change in sync_registry(db, predictor, self.shadows + ([nowcast] if nowcast else []), self.clock()):
             db.log_event("INFO", "model_registry", change)
         self.experiment = ensure_experiment(db, cfg, self.clock())
 
@@ -91,10 +97,14 @@ class Engine:
         steps = [
             ("markets", self.collect_markets),
             ("forecasts", self.collect_forecasts),
+            ("reports", self.collect_reports),
             ("calibration", self.maybe_fit_calibration),
+            ("market_anchor", self.maybe_fit_anchor),
             ("signals", self.predict_and_trade),
             ("settlement", self.settle),
+            ("experiment", self.check_experiment),
             ("observations", self.maybe_collect_observations),
+            ("learning", self.learn),
         ]
         for name, fn in steps:
             try:
@@ -150,7 +160,8 @@ class Engine:
                     resolution_source=old.resolution_source, criteria=old.criteria))
                 log.info("market %s: resolution text changed", pm.id)
             # a market we already saw close/resolve never re-opens
-            conn.execute(update(markets).where(mk.id == pm.id).values({**values, "closed": or_(mk.closed, pm.closed)}))
+            closed = True if pm.closed else mk.closed
+            conn.execute(update(markets).where(mk.id == pm.id).values({**values, "closed": closed}))
 
     def _open_tradeable_markets(self) -> list[dict]:
         rows = self.db.rows(select(markets).where(markets.c.tradeable.is_(True), markets.c.closed.is_(False)))
@@ -177,17 +188,20 @@ class Engine:
                 self.db.log_event("WARNING", "forecasts", f"{code}: {type(exc).__name__}: {exc}")
                 continue
             runs = {m: _parse_time(t) for m, t in (meta.get("model_runs") or {}).items()}
+            # the hourly forecast is kept for the station's local today only, for the same-day model
+            today = local_today(st.tz, now).isoformat() if self.nowcast and st else None
             for local_date, kind in keys:
                 values = by_kind.get(kind, {}).get(local_date)
                 if values:
-                    self._store_forecast(st, local_date, kind, values, runs, meta, now)
+                    hourly = (by_kind.get("hourly") or {}).get(local_date) if local_date == today else None
+                    self._store_forecast(st, local_date, kind, values, runs, meta, now, hourly)
                     stored += 1
         if stored:
             self.db.set_state("last_weather_update", now.isoformat())
         return {"stations": len(needed), "snapshots": stored}
 
     def _store_forecast(self, st, local_date: str, kind: str, values: dict, runs: dict, meta: dict,
-                        now: datetime) -> int:
+                        now: datetime, hourly: dict | None = None) -> int:
         """One snapshot row (as before) plus one forecast_values row per model,
         each with its run time, horizon and validation verdict."""
         q = validate_forecast(values, runs, now, self.validation)
@@ -195,7 +209,7 @@ class Engine:
         snap_id = self.db.insert(forecast_snapshots, fetched_at=now, source=self.forecaster.source,
                                  station=st.code, local_date=local_date, kind=kind, values_c=values,
                                  request=meta, issue_time=min(used_runs) if used_runs else None,
-                                 quality=q.as_dict())
+                                 quality=q.as_dict(), hourly_c=hourly)
         day_end = hours_to_day_end(local_date, st.tz, now)
         for model, value in values.items():
             run = runs.get(model)
@@ -211,19 +225,61 @@ class Engine:
                               f"errors={q.errors} rejected={q.rejected}", details=q.as_dict())
         return snap_id
 
+    def collect_reports(self) -> dict:
+        """The station reports (METARs) so far today of every station with a
+        market on its local today, for the same-day model."""
+        if self.nowcast is None or not hasattr(self.observer, "fetch_reports"):
+            return {"enabled": False}
+        now = self.clock()
+        stations = {}
+        for m in self._open_tradeable_markets():
+            st = get_station(m["station"])
+            if st is not None and m["local_date"] == local_today(st.tz, now).isoformat():
+                stations[st.code] = st
+        stored = 0
+        for code, st in sorted(stations.items()):
+            start, _ = same_day.day_bounds(st.tz, local_today(st.tz, now).isoformat())
+            try:
+                reports = self.observer.fetch_reports(st, start, now)
+            except Exception as exc:
+                self.db.log_event("WARNING", "reports", f"{code}: {type(exc).__name__}: {exc}")
+                continue
+            stored += self._store_reports(code, reports, start, now)
+        if stored:
+            self.db.set_state("last_report_update", now.isoformat())
+        return {"stations": len(stations), "new_reports": stored}
+
+    def _store_reports(self, code: str, reports: list[tuple[datetime, float]], start: datetime, now: datetime) -> int:
+        """Append the reports not stored yet; a temperature outside the
+        validation bounds is skipped."""
+        sr = station_reports.c
+        seen = {_parse_time(r["valid"]) for r in self.db.rows(select(sr.valid).where(
+            sr.station == code, sr.source == self.observer.source, sr.valid >= start))}
+        lo, hi = self.validation.min_temp_c, self.validation.max_temp_c
+        new = [dict(station=code, valid=t, temp_c=round(v, 3), source=self.observer.source, fetched_at=now)
+               for t, v in reports if t not in seen and lo <= v <= hi]
+        if new:
+            with self.db.engine.begin() as conn:
+                conn.execute(station_reports.insert(), new)
+        return len(new)
+
+    def _todays_reports(self, code: str, tz: str, now: datetime) -> list[tuple[datetime, float]]:
+        sr = station_reports.c
+        start, _ = same_day.day_bounds(tz, local_today(tz, now).isoformat())
+        rows = self.db.rows(select(sr.valid, sr.temp_c).where(sr.station == code, sr.valid >= start, sr.valid <= now))
+        return sorted({_utc(r["valid"]): r["temp_c"] for r in rows}.items())
+
     def _latest_forecast(self, station: str, local_date: str, kind: str) -> dict | None:
         fs = forecast_snapshots.c
         return self.db.one(select(forecast_snapshots).where(
             fs.station == station, fs.local_date == local_date, fs.kind == kind).order_by(desc(fs.id)).limit(1))
 
+    def _params(self) -> param_sets.Params:
+        """The production station bias/spread param set (wxbot/learning/params.py)."""
+        return param_sets.load(self.db, self.cfg, param_sets.production(self.db))
+
     def _calibration(self, station: str, kind: str, lead_days: int) -> Calibration:
-        cp = calibration_params.c
-        row = self.db.one(select(calibration_params).where(
-            cp.station == station, cp.kind == kind, cp.lead_days == max(lead_days, 1),
-        ).order_by(desc(cp.id)).limit(1))
-        if row and row["n"] >= self.cfg.model.min_calibration_samples:
-            return Calibration(bias_c=row["bias_c"], sigma_c=row["sigma_c"], n=row["n"], source="backtest")
-        return default_calibration(list(self.cfg.model.default_sigma_c), lead_days)
+        return self._params().calibration(station, kind, lead_days)
 
     # -- 3. probability calibration ---------------------------------------
     def maybe_fit_calibration(self, force: bool = False) -> dict:
@@ -234,7 +290,7 @@ class Engine:
         hours = float(self.cfg.calibration.refit_hours)
         if not force and last and now - datetime.fromisoformat(last) < timedelta(hours=hours):
             return {"skipped": True}
-        rows = fit_round(self.db, self.cfg, self.predictor.version, now)
+        rows = fit_round(self.db, self.cfg, self.predictor.version, now, param_sets.production(self.db))
         self.db.set_state("last_calibration_fit", now.isoformat())
         chosen = next((r["version"] for r in rows if r["selected"]), "identity")
         self.db.log_event("INFO", "calibration", f"fit on {rows[0]['n'] if rows else 0} resolved markets: "
@@ -243,21 +299,57 @@ class Engine:
                               "log_loss_after")} for r in rows})
         return {"n": rows[0]["n"] if rows else 0, "using": chosen}
 
+    def maybe_fit_anchor(self, force: bool = False) -> dict:
+        """Refit the market anchor at most every refit_hours (DB only, no
+        network); see wxbot/calibration/anchor.py for the approval rule."""
+        c = self.cfg.get("market_anchor")
+        if not c or not c.enabled:
+            return {"enabled": False}
+        now = self.clock()
+        last = self.db.get_state("last_anchor_fit")
+        if not force and last and now - datetime.fromisoformat(last) < timedelta(hours=float(c.refit_hours)):
+            return {"skipped": True}
+        row = market_anchor.fit_round(self.db, self.cfg, self.predictor.version, now, param_sets.production(self.db))
+        out = {"n": row["n"], "approved": row["approved"]}
+        self._log_anchor(row, "")
+        if self.nowcast is not None:
+            row = market_anchor.fit_nowcast_round(self.db, self.cfg, self.nowcast.version, now)
+            out["same_day"] = {"n": row["n"], "approved": row["approved"]}
+            self._log_anchor(row, "same-day model: ")
+        self.db.set_state("last_anchor_fit", now.isoformat())
+        return out
+
+    def _log_anchor(self, row: dict, prefix: str) -> None:
+        self.db.log_event("INFO", "market_anchor", f"{prefix}fit on {row['n']} resolved markets with a tight book: "
+                          f"{'approved' if row['approved'] else 'not approved'} ({row['reason']})",
+                          details={k: row[k] for k in ("params", "brier_market", "brier_anchored", "log_loss_market",
+                                                       "log_loss_model", "log_loss_anchored",
+                                                       "improvement_confidence", "approved")})
+
     # -- 4. predictions, signals, paper bets ---------------------------------
     def predict_and_trade(self) -> dict:
         now = self.clock()
         n_pred = n_shadow = n_bets = 0
-        calibrator = active_calibrator(self.db, self.cfg, self.predictor.version, now)
+        params = self._params()
+        calibrator = active_calibrator(self.db, self.cfg, self.predictor.version, now, params.ps)
+        c = self.cfg.get("market_anchor")
+        anchor = market_anchor.active_anchor(self.db, self.cfg, self.predictor.version, now, params.ps) \
+            if c and c.enabled else None
+        # the same-day model may signal only through its own anchor, so never with the anchor off
+        nc = self.cfg.get("nowcast")
+        nc_anchor = market_anchor.active_anchor(self.db, self.cfg, self.nowcast.version, now) \
+            if self.nowcast is not None and nc and nc.bet and anchor is not None else None
+        reports: dict[str, list] = {}       # today's station reports, read once per cycle
         history: dict[tuple, dict] = {}     # observed values per (station, kind), read once per cycle
-        features: dict[tuple, object] = {}  # per (station, day, kind, forecast)
+        features: dict[tuple, Features] = {}  # per (station, day, kind, forecast)
         shadow_errors: dict[str, str] = {}
         for m in self._open_tradeable_markets():
             st = get_station(m["station"])
             fc = self._latest_forecast(m["station"], m["local_date"], m["kind"])
-            if fc is None:
+            if st is None or fc is None:
                 continue
             lead_days = (date.fromisoformat(m["local_date"]) - local_today(st.tz, now)).days
-            calib = self._calibration(m["station"], m["kind"], lead_days)
+            calib = params.calibration(m["station"], m["kind"], lead_days)
             bucket = Bucket(m["bucket_lo"], m["bucket_hi"], m["unit"])
             quality = fc.get("quality") or {"ok": True, "rejected": {}}
             values = {k: v for k, v in fc["values_c"].items() if k not in quality.get("rejected", {})}
@@ -269,7 +361,7 @@ class Engine:
             feats = features[key]
             pred = self.predictor.predict(bucket, m["kind"], values, lead_days, calib, feats)
             pred.inputs["data_quality"] = quality
-            fetched_at = fc["fetched_at"] if fc["fetched_at"].tzinfo else fc["fetched_at"].replace(tzinfo=timezone.utc)
+            fetched_at = fc["fetched_at"] if fc["fetched_at"].tzinfo else fc["fetched_at"].replace(tzinfo=UTC)
             pred.inputs["forecast_fetched_at"] = fetched_at.isoformat()
             pred.inputs["forecast_source"] = fc["source"]
             pred.inputs["features"] = feats.values
@@ -278,13 +370,25 @@ class Engine:
                                      model_version=pred.model_version, lead_days=lead_days, mu_c=pred.mu_c,
                                      sigma_c=pred.sigma_c, p_yes=pred.p_yes, inputs=pred.inputs,
                                      role="production", feature_set=FEATURE_SET, calibrated_prob=cal_p,
-                                     calibrator_version=calibrator.version)
+                                     calibrator_version=calibrator.version, params_version=params.version)
             n_pred += 1
             n_shadow += self._shadow_predictions(m, fc, bucket, values, lead_days, calib, feats, pred_id, now,
                                                  shadow_errors)
+            same = None
+            if self.nowcast is not None and lead_days == 0:
+                same = self._nowcast_prediction(m, st, fc, bucket, values, quality, pred_id, now, reports,
+                                                shadow_errors)
+                n_shadow += same is not None
             forecast_age = (now - fetched_at).total_seconds() / 60.0
-            if self._signal(m, st, pred, pred_id, forecast_age, now, cal_p, calibrator.version):
-                n_bets += 1
+            window = None if nc is None else (float(nc.min_hours_left), float(nc.max_hours_left))
+            if (same is not None and nc_anchor is not None and window is not None
+                    and window[0] <= hours_to_day_end(m["local_date"], st.tz, now) <= window[1]):
+                # in its window the same-day model makes the market's signal, through its own anchor
+                placed = self._signal(m, st, same[0], same[1], forecast_age, now, same[0].p_yes, "identity",
+                                      nc_anchor, window)
+            else:
+                placed = self._signal(m, st, pred, pred_id, forecast_age, now, cal_p, calibrator.version, anchor)
+            n_bets += placed
         for version, err in shadow_errors.items():
             self.db.log_event("WARNING", "shadow_model", f"{version}: {err}")
         self.db.set_state("last_prediction_time", now.isoformat())
@@ -318,31 +422,64 @@ class Engine:
             n += 1
         return n
 
+    def _nowcast_prediction(self, m, st, fc, bucket, values, quality, pred_id, now, reports, errors) -> tuple | None:
+        """The same-day model's prediction for a market on its local today,
+        stored as a shadow prediction: (prediction, its id), or None when the
+        model has too little to go on (no recent report, no hourly forecast)."""
+        assert self.nowcast is not None
+        if m["station"] not in reports:
+            reports[m["station"]] = self._todays_reports(m["station"], st.tz, now)
+        try:
+            sp = self.nowcast.predict(bucket, m["kind"], m["station"], m["local_date"], st.tz, reports[m["station"]],
+                                      fc.get("hourly_c"), now)
+        except Exception as exc:  # a broken shadow model never stops the production model
+            errors[self.nowcast.version] = f"{type(exc).__name__}: {exc}"
+            return None
+        if sp is None:
+            return None
+        sp.inputs.update(production_prediction_id=pred_id, model_values_c=values, data_quality=quality)
+        sid = self.db.insert(predictions, ts=now, market_id=m["id"], forecast_snapshot_id=fc["id"],
+                             model_version=sp.model_version, lead_days=0, mu_c=sp.mu_c, sigma_c=sp.sigma_c,
+                             p_yes=sp.p_yes, inputs=sp.inputs, role="shadow", feature_set=same_day.FEATURE_SET)
+        return sp, sid
+
     def _latest_snapshot(self, market_id: str) -> dict | None:
         ms = market_snapshots.c
         return self.db.one(select(market_snapshots).where(ms.market_id == market_id).order_by(desc(ms.id)).limit(1))
 
     def _signal(self, m: dict, st, pred, pred_id: int, forecast_age: float, now: datetime,
-                cal_p: float, calibrator_version: str) -> bool:
+                cal_p: float, calibrator_version: str, anchor: tuple | None = None,
+                lead_window: tuple | None = None) -> bool:
         """Every rule uses the calibrated probability (the raw one when no
-        calibrator is approved); the raw model probability is kept alongside."""
+        calibrator is approved), or, with the market anchor on, the model
+        combined with the market price (wxbot/calibration/anchor.py); the raw
+        model probability is kept alongside. `anchor` is active_anchor()'s
+        (anchor or None, version or why not), None when the anchor is off.
+        `lead_window` replaces [strategy]'s hours to the day's end (same-day model)."""
         cfg = self.cfg
         snap = self._latest_snapshot(m["id"]) or {}
         bid, ask, yes_px = snap.get("best_bid"), snap.get("best_ask"), snap.get("yes_price")
         yes_mid = (bid + ask) / 2 if bid is not None and ask is not None else yes_px
+        anchored = anchor_check = None
+        if anchor is not None:
+            fitted, why = anchor
+            book_mid = market_anchor.tight_mid(bid, ask, float(cfg.market_anchor.max_spread))
+            if fitted is None:
+                anchor_check = (False, f"no approved anchor: {why}")
+            elif book_mid is None:
+                anchor_check = (False, "no tight book: spread over max_spread or a side not quoted")
+            else:
+                anchored = fitted(pred.p_yes, book_mid)
+                cal_p, calibrator_version = anchored, fitted.version
+                anchor_check = (True, fitted.version)
         quotes = {  # side -> (calibrated prob, top-of-book ask for that side, mid-implied prob)
             "YES": (cal_p, ask if ask and ask < 1 else None, yes_mid),
             "NO": (1 - cal_p, (1 - bid) if bid else None, None if yes_mid is None else 1 - yes_mid),
         }
-
-        def score(side):
-            p, px, _ = quotes[side]
-            return (px is not None, p - px if px is not None else p)
-        side = max(quotes, key=score)
-        model_prob, top_price, market_prob = quotes[side]
+        side = rules.best_side(quotes)
+        model_prob, top_ask, market_prob = quotes[side]
         raw_prob = pred.p_yes if side == "YES" else 1 - pred.p_yes
-        if top_price is not None:
-            top_price = min(top_price + cfg.strategy.slippage, 0.999) * (1 + cfg.strategy.fee_rate)
+        top_price = rules.quoted_entry(top_ask, cfg.strategy)
         bank = portfolio.bankroll(self.db, cfg.bankroll.initial)
         ctx = rules.Context(
             side=side, model_prob=model_prob, market_prob=market_prob, entry_price=top_price,
@@ -350,7 +487,9 @@ class Engine:
             n_models=len(pred.inputs["model_values_c"]), forecast_age_min=forecast_age, sigma_c=pred.sigma_c,
             market_open=not m["closed"], has_position=portfolio.has_open_position(self.db, m["id"]),
             daily_pnl=portfolio.daily_realized_pnl(self.db, now), initial_bankroll=cfg.bankroll.initial,
+            experiment_open=is_open(self.experiment, now),
             data_valid=bool(pred.inputs.get("data_quality", {}).get("ok", True)),
+            market_anchor=anchor_check, lead_window=lead_window,
         )
         results = rules.evaluate(ctx, cfg)
         fill = None
@@ -375,7 +514,7 @@ class Engine:
             budget = max(0.0, min(caps.values()))
             sizing = {"sizer": self.sizer.name, "equity": round(equity, 4), "cash": round(bank.cash, 4),
                       "open_exposure": round(bank.open_exposure, 4), "caps": {k: round(v, 4) for k, v in caps.items()},
-                      "binding_cap": min(caps, key=caps.get), "budget": round(budget, 4)}
+                      "binding_cap": min(caps, key=lambda k: caps[k]), "budget": round(budget, 4)}
             fill = rules.simulate_fill(asks, budget, s.slippage, s.fee_rate, cfg.sizing.max_book_share)
             ctx.entry_price = fill.avg_price if fill.shares else None
             ctx.stake = fill.total
@@ -389,6 +528,8 @@ class Engine:
         probabilities = {"model": round(raw_prob, 6), "calibrated": round(model_prob, 6),
                          "calibrator": calibrator_version,
                          "market": None if market_prob is None else round(market_prob, 6)}
+        if anchor is not None:
+            probabilities["anchored"] = None if anchored is None else round(anchored, 6)
         results_out = ([{"rule": "probabilities", "passed": True, "value": probabilities, "threshold": None}]
                        + results + ([{"rule": "sizing_detail", "passed": True, "value": sizing, "threshold": None}]
                                     if sizing else []))
@@ -399,6 +540,7 @@ class Engine:
             proposed_stake=ctx.stake, decision=decision,
             reason="all rules passed" if not bad else "failed: " + ", ".join(bad), rule_results=results_out)
         if decision == "BET":
+            assert fill is not None   # a bet passed the rules, so it was sized and filled
             try:
                 bet_id = self.broker.place(signal_id=sig_id, market=m, side=side, fill=fill, model_prob=raw_prob,
                                            market_prob=market_prob, edge=edge, ev=ev, confidence=model_prob,
@@ -410,7 +552,7 @@ class Engine:
                 return False
             self.db.log_event("INFO", "paper_bet", f"bet #{bet_id}: {side} '{m['question']}' "
                               f"${fill.total:.2f} @ {fill.avg_price:.3f} (model {raw_prob:.2f}, "
-                              f"calibrated {model_prob:.2f})")
+                              f"calibrated {model_prob:.2f})", code="PAPER_BET_OPENED")
             return True
         return False
 
@@ -513,12 +655,12 @@ class Engine:
         m = self.db.one(select(markets).where(markets.c.id == market_id))
         if not m or not m["yes_token"]:
             return 0
-        start = _parse_time(m["pm_created_at"]) or _parse_time(m["first_seen"]) - timedelta(days=3)
+        start = _parse_time(m["pm_created_at"]) or (_parse_time(m["first_seen"]) or now) - timedelta(days=3)
         end = min(_parse_time(m["closed_time"]) or now, now)
         series = self.pm.get_price_history(m["yes_token"], start, end)
         if not series:
             return 0
-        kept = [pt for i, pt in enumerate(series) if i == 0 or pt[1] != series[i - 1][1] or i == len(series) - 1]
+        kept = price_changes(series)
         with self.db.engine.begin() as conn:
             conn.execute(market_price_history.insert(), [
                 dict(market_id=market_id, token="YES", t=t, price=p, fetched_at=now) for t, p in kept])
@@ -528,14 +670,18 @@ class Engine:
     def maybe_collect_observations(self, force: bool = False) -> dict:
         now = self.clock()
         last = self.db.get_state("last_observation_update")
-        if not force and last and now - datetime.fromisoformat(last) < timedelta(hours=self.cfg.schedule.observation_hours):
+        every = timedelta(hours=self.cfg.schedule.observation_hours)
+        if not force and last and now - datetime.fromisoformat(last) < every:
             return {"skipped": True}
         mk = markets.c
         since = (now - timedelta(days=4)).date().isoformat()
-        codes = {r["station"] for r in self.db.rows(select(mk.station).where(mk.tradeable.is_(True), mk.local_date >= since))}
+        codes = {r["station"] for r in self.db.rows(
+            select(mk.station).where(mk.tradeable.is_(True), mk.local_date >= since))}
         stored = 0
         for code in sorted(codes):
             st = get_station(code)
+            if st is None:
+                continue
             end = local_today(st.tz, now) - timedelta(days=1)
             try:
                 obs = self.observer.fetch(st, end - timedelta(days=3), end)
@@ -559,10 +705,29 @@ class Engine:
                         self.db.log_event("WARNING", "validation", f"observation {code} {d} {kind} rejected: "
                                           f"{problem}", details={"value_c": value, "n_reports": n})
                     continue
-                prev = self.db.one(select(wo.value_c).where(wo.station == code, wo.local_date == d, wo.kind == kind,
-                                                            wo.source == self.observer.source).order_by(desc(wo.id)).limit(1))
+                prev = self.db.one(select(wo.value_c).where(
+                    wo.station == code, wo.local_date == d, wo.kind == kind, wo.source == self.observer.source,
+                ).order_by(desc(wo.id)).limit(1))
                 if prev is None or abs(prev["value_c"] - value) > 1e-6:
                     self.db.insert(weather_observations, station=code, local_date=d, kind=kind, value_c=value,
                                    n_reports=n, source=self.observer.source, fetched_at=self.clock())
                     stored += 1
         return stored
+
+    # -- 7. learning ---------------------------------------------------------
+    def check_experiment(self) -> dict:
+        """After the experiment's planned end: log that it ended, and that it is
+        complete once its last bet has settled (wxbot/experiment.py)."""
+        return check_end(self.db, self.experiment, self.clock())
+
+    def learn(self) -> dict:
+        """Record newly resolved markets in the learning ledger, roll back a
+        deployed param set that does worse than the one before it, and retrain
+        when due (wxbot/learning/)."""
+        return learn(self.db, self.cfg, self.history, self.observer, self.clock())
+
+    def retrain(self) -> dict:
+        """Retrain now, whether due or not (python main.py retrain)."""
+        recorded = outcomes.record(self.db, self.clock())
+        return {"outcomes": recorded, **retrain.retrain(self.db, self.cfg, self.history, self.observer,
+                                                          self.clock(), force=True)}
