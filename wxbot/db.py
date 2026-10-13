@@ -68,6 +68,17 @@ forecast_snapshots = Table(
     Column("request", JSON),                          # url + params used
     Column("issue_time", DateTime(timezone=True)),    # oldest model run used; None if unknown
     Column("quality", JSON),                          # validation result, see data/validation.py
+    Column("hourly_c", JSON),                         # local today only: {"time": [...], "values": {model: [...]}}
+)
+
+station_reports = Table(  # the station's own reports (METARs) during its local today, for the same-day model
+    "station_reports", metadata,
+    Column("id", Integer, primary_key=True),
+    Column("station", String(10), nullable=False, index=True),
+    Column("valid", DateTime(timezone=True), nullable=False, index=True),   # report time, UTC
+    Column("temp_c", Float, nullable=False),
+    Column("source", String(40), nullable=False),
+    _ts("fetched_at"),
 )
 
 market_price_history = Table(  # CLOB traded-price series, stored once a market resolves
@@ -227,6 +238,7 @@ market_anchors = Table(  # every market-anchor fit (wxbot/calibration/anchor.py)
     Column("improvement_confidence", Float),           # share of holdout bootstrap resamples where it beats the market
     Column("approved", Boolean, nullable=False),       # only an approved anchor lets the bot bet
     Column("reason", Text),
+    Column("scope", String(12)),                       # "same-day" (wxbot/model/nowcast.py); None = decision model
 )
 
 model_versions = Table(  # model registry: every model version the bot has run, and its current role
@@ -470,7 +482,7 @@ EXPORT_TABLES = [
     "market_snapshots", "market_price_history", "market_criteria_history", "market_resolutions", "bankroll_snapshots",
     "weather_observations", "calibration_params", "backtest_runs", "model_versions", "prob_calibrators",
     "experiments", "system_events", "historical_forecasts", "backtest_predictions", "param_sets",
-    "prediction_outcomes", "market_anchors",
+    "prediction_outcomes", "market_anchors", "station_reports",
 ]
 
 

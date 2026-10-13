@@ -95,6 +95,7 @@ class Context:
     data_valid: bool = True      # forecast snapshot passed data/validation.py
     experiment_open: bool = True  # before the experiment's planned end (wxbot/experiment.py)
     market_anchor: tuple | None = None  # (passed, anchor version or why not); None = anchor off
+    lead_window: tuple | None = None    # (min, max) hours to the day's end instead of [strategy]'s (same-day model)
     extra: dict = field(default_factory=dict)
 
 
@@ -108,6 +109,7 @@ def evaluate(ctx: Context, cfg) -> list[dict]:
     price = ctx.entry_price
     edge = None if price is None else ctx.model_prob - price
     ev = None if not price else ctx.model_prob / price - 1.0
+    lead_lo, lead_hi = ctx.lead_window or (s.min_lead_hours, s.max_lead_hours)
     results = [
         _r("experiment_open", ctx.experiment_open, ctx.experiment_open, True),
         _r("market_open", ctx.market_open, ctx.market_open, True),
@@ -118,8 +120,8 @@ def evaluate(ctx: Context, cfg) -> list[dict]:
         _r("entry_price_range", price is not None and s.min_entry_price <= price <= s.max_entry_price,
            price, f"{s.min_entry_price}..{s.max_entry_price}"),
         _r("liquidity", (ctx.liquidity or 0) >= s.min_liquidity_usd, ctx.liquidity, f">= {s.min_liquidity_usd}"),
-        _r("time_to_resolution", s.min_lead_hours <= ctx.lead_hours <= s.max_lead_hours,
-           round(ctx.lead_hours, 1), f"{s.min_lead_hours}..{s.max_lead_hours} h"),
+        _r("time_to_resolution", lead_lo <= ctx.lead_hours <= lead_hi, round(ctx.lead_hours, 1),
+           f"{lead_lo}..{lead_hi} h"),
         _r("data_validation", ctx.data_valid, ctx.data_valid, True),
         _r("data_quality_models", ctx.n_models >= cfg.weather.min_models, ctx.n_models,
            f">= {cfg.weather.min_models}"),

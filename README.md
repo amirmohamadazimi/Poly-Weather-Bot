@@ -93,7 +93,9 @@ paper bet ─> settlement (Polymarket resolution) ─> stats and learning (ledge
    resolved markets it was not fitted on (see [Market anchor](#market-anchor)).
 6. **Signal:** pick the better side (YES or NO) and check every rule on the
    anchored probability. A prediction of 95% is *not* a bet unless the price
-   leaves an edge.
+   leaves an edge. On a market's own day, 1 to 18 h before it ends, the
+   signal comes from the same-day model instead, through its own anchor (see
+   [Same-day model](#same-day-model-forward-test)).
 7. **Paper bet:** size it, then simulate the fill by walking the real CLOB order
    book (taking at most 25% of each level, plus slippage and fees).
 8. **Settle** when Polymarket resolves the market (prices pinned to 1/0).
@@ -120,6 +122,7 @@ you reconstruct exactly why each bet was made. Click any row in the dashboard to
 | No existing position in that market | |
 | Daily realised loss | < 5% of starting bankroll |
 | Market anchor: an approved model + market fit, and a book no wider than 0.05 | on |
+| Same-day model: time until the end of the market's own day (its own anchor) | 1 – 18 h |
 
 ### Data validation
 
@@ -197,6 +200,7 @@ anomaly from it. The features are stored with each production prediction.
 | `normal-multimodel-v1` | production | Bias-corrected model mean, backtest-fitted sigma (above). The only model that trades |
 | `raw-forecast-v1` | shadow | The same normal model on the raw model mean, with no station bias correction and the default sigma for the lead time |
 | `climatology-v1` | shadow | How often the observed high/low, in whole degrees, fell in the bucket on days within 7 days of the same date in past years. Ignores the forecast; no prediction with fewer than 20 past days |
+| `nowcast-v1` | shadow (same-day) | On the market's own day: the station's reports so far plus the newest hourly forecast for the rest of the day. Can bet only through its own market anchor (see [Same-day model](#same-day-model-forward-test)) |
 
 Shadow models are listed in `[model] shadow_models`. Their predictions are
 stored with `role = "shadow"` and never create a signal or a bet. The
@@ -282,6 +286,41 @@ of the bets that lost $115.64 ($1,000 run) and $16.30 ($100 run). The report's
 "Market anchor" section shows the latest fit. The market backtest
 (`backtest-markets`) still replays the model-only rules: its price history is
 an hourly mid with no order book, so the spread condition cannot be replayed.
+
+### Same-day model (forward test)
+
+`nowcast-v1` (`wxbot/model/nowcast.py`) prices a market on its own day. The
+station's reports so far give the high (or low) up to now; what is left is the
+extreme of the hours still to come, taken as normal around the newest hourly
+forecast's extreme for those hours, corrected by the station's bias and by how
+far the newest report is from the forecast for its hour, with a spread that
+depends on the hours left. The final value is the larger (smaller) of the two,
+so a bucket the day has already passed gets 0.1%.
+
+Its parameters (`wxbot/model/nowcast_params.json`) were fitted on a year of
+hourly station reports and the forecasts issued a day ahead
+(`research/fit_nowcast.py`; the data is on the `research-intraday` branch).
+Tested on Sep 27 to Oct 12 2026 against live order books, the market price
+was the better forecast at every hour of the day, and every trading rule
+replayed on it lost money (`docs/experiments.md`). The one version that could
+not be backtested is the one the bot runs: the newest forecast instead of a
+day-old one. So it runs as a forward test:
+
+* Each cycle stores the reports of every station with a market on its local
+  today (`station_reports`) and the hourly forecast for that day
+  (`forecast_snapshots.hourly_c`), and the model prices every such market as a
+  shadow model. It needs a report from the last 2 hours.
+* It has its own market anchor (scope `same-day`), fitted daily on its
+  predictions made 1 to 18 h before the market's day ends, with the same
+  approval rule as above. A market has several of these, so the holdout is
+  the newest 30% of markets and the bootstrap resamples whole markets.
+* In that window the same-day model makes the market's signal, with the
+  usual rules, its anchored probability, and 1–18 h in place of 18–96 h. While
+  its anchor is not approved, nothing is bet. `[nowcast] bet = false` keeps it
+  shadow-only, and it never bets with `[market_anchor]` off.
+* REPORT.md's "Same-day model (forward test)" section scores it against the
+  market's mid at the same moment by hours left, on resolved markets with a
+  tight book, with its latest anchor fit.
 
 ### How the learning system works
 
@@ -557,7 +596,7 @@ PostgreSQL, install `psycopg[binary]` and set `WXBOT_APP__DATABASE_URL`.
 main.py                     CLI entry point
 config.toml                 all settings
 wxbot/data/                 Polymarket, Open-Meteo, METAR clients; station table
-wxbot/model/                predictor interface, normal multi-model v1, baselines, registry
+wxbot/model/                predictor interface, normal multi-model v1, baselines, same-day model, registry
 wxbot/features.py           the feature set every model sees
 wxbot/calibration/          isotonic and Platt probability calibration, walk-forward fit and approval
 wxbot/history.py            loads past observations for the climatology baseline
@@ -572,6 +611,7 @@ wxbot/runner.py             background loop
 wxbot/backtest.py           walk-forward forecast backtest + calibration fit
 wxbot/backtesting/          market backtest: collect, replay with no look-ahead, evaluate, BACKTEST.md
 wxbot/web/                  dashboard (FastAPI + one HTML page)
+research/                   data pull and fit for the same-day model's parameters
 tests/                      offline tests (no network)
 ```
 

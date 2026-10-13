@@ -118,6 +118,25 @@ holdout_fraction = 0.3
 min_confidence = 0.95
 refit_hours = 24
 
+[nowcast]
+# Same-day model, a forward test (wxbot/model/nowcast.py): on a market's own
+# day it prices every bucket from the station's reports so far and the newest
+# hourly forecast. Its predictions are stored as a shadow model and scored
+# against the market price in REPORT.md. With bet = true it may also bet on
+# markets with min_hours_left..max_hours_left hours to the end of their day,
+# but only through its own market anchor (same rules as [market_anchor], fitted
+# on its own predictions), so never before it has beaten the market price on
+# resolved markets; with [market_anchor] off it never bets.
+enabled = true
+bet = true
+min_hours_left = 1
+max_hours_left = 18
+max_report_age_minutes = 120   # no prediction when the newest station report is older
+min_models = 2                 # forecast hours need this many models
+# it knows when a bucket is already ruled out, so it may go closer to 0 and 1
+prob_floor = 0.001
+prob_ceiling = 0.999
+
 [learning]
 # Retraining of the production model's station bias and error spread
 # (wxbot/learning/, README "How the learning system works"). Every retrain_days
