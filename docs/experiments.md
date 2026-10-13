@@ -20,9 +20,20 @@
   (name, starting bankroll, start time, commit, settings), and REPORT.md names
   it. Because it runs from `main`, merged improvements reach it, but only once
   their CI has passed: each run uses the newest commit of `main` on which the
-  `tests` workflow passed ([ci.md](ci.md)). Each run records its commit, every change of code version is logged in
-  `system_events`, and the report shows the commit it started on and the one
-  running now.
+  `tests` workflow passed ([ci.md](ci.md)). Each run records its commit,
+  every change of code version is logged in `system_events`, and the report
+  shows the commit it started on and the one running now.
+* Length (from v2 M13): 30 days from its start at 2026-10-01 21:48 UTC, so it
+  stops opening bets at **2026-10-31 21:48 UTC**. The workflow pins
+  `WXBOT_EXPERIMENT__DAYS=30`, and the length is stored with the experiment the
+  first time, so no later setting can move the end. After it, every signal
+  fails the `experiment_open` rule; the runs go on settling the open bets,
+  then log `EXPERIMENT_COMPLETE`. REPORT.md and the dashboard show the day
+  ("day 4 of 30"), and then "ended" and "complete".
+* Operation: REPORT.md's "Operation" section counts the cycles, the median and
+  longest gap between them, finished days with none, and the errors logged.
+  GitHub fires the 3-hourly schedule late: the first three days had 13 cycles,
+  a median of 5.3 hours apart, the longest gap 8.9 hours.
 * Learning (from v2 M9): once a week the cycle retrains the station bias and
   spread and deploys a new set only if it beats the one in use on markets it
   was not fitted on; a deployed set that then does worse is rolled back. Every
@@ -33,14 +44,40 @@
   (`python main.py climatology --if-missing`; retried on later runs if it
   fails) so the climatology baseline is scored from day one, and fits the
   forecast calibration (`backtest --if-missing`).
-* State: `wxbot.sqlite3.gz` and `REPORT.md` on the `paper-data-100` branch.
+* Research report (from v2 M14): each run also writes `RESEARCH.md`, which
+  answers whether the experiment found positive EV, with a verdict that needs
+  five checks to pass, not a positive P/L. It is interim until the end,
+  preliminary while the last bets settle, then final.
+* Market anchor (from the fix for the losses, after 2026-10-12): bets only while
+  the model combined with the market price beats the price alone on held-out
+  resolved markets (README "Market anchor"). On the data so far that has never
+  been the case, so from the run that picks this up the experiment places no
+  new bets until the model earns them; open bets still settle. REPORT.md says
+  so in its verdict and shows the latest fit.
+* Same-day model (forward test, after 2026-10-13): a model that uses the
+  station's reports from the market's own day (README "Same-day model"). In a
+  backtest on Sep 27 to Oct 12 2026 against live order books (tight books
+  only), the market was sharper at every hour of the day, e.g. log loss 0.103
+  vs 0.005 with 4–6 h left and 0.318 vs 0.262 with 12–15 h left on
+  highest-temperature markets, and every trading rule replayed at the recorded
+  books lost (−6% to −53%). The bot runs the one version that could not be
+  backtested, with the newest forecast, as a shadow model scored in REPORT.md;
+  it can bet only 1–18 h before a market's day ends and only once its own
+  anchor beats the market price on held-out markets. The research data
+  (a year of METAR reports and day-ahead hourly forecasts) is on the
+  `research-intraday` branch; `research/fit_nowcast.py` rebuilds the
+  parameters from it.
+* State: `wxbot.sqlite3.gz`, `REPORT.md` and `RESEARCH.md` on the
+  `paper-data-100` branch.
 
 ## Reproducing an experiment
 
 1. Check out the code the experiment ran (for experiment 1, `git checkout exp1-frozen`).
 2. Download `wxbot.sqlite3` from its state branch into `data/`.
-3. `python main.py report` rebuilds the report from the stored rows, and
-   `python main.py export DIR` dumps every table. Every bet links to the
+3. `python main.py report` and `python main.py research` rebuild the reports
+   from the stored rows (the research report is the same every time: its
+   resampling uses a fixed seed), and `python main.py export DIR` dumps every
+   table. Every bet links to the
    signal, prediction and forecast snapshot that produced it, with the exact
    inputs and order-book levels used.
 4. `python main.py backtest --days 90` re-runs the walk-forward forecast

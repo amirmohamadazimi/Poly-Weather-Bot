@@ -2,8 +2,10 @@
 
 `production` is [model] version: its predictions create signals. `shadow`
 models ([model] shadow_models) are priced on every market and scored, never
-traded. A version that leaves the config becomes `retired`. Rows are never
-deleted, so every stored prediction can be traced to its model.
+traded. The same-day model ([nowcast]) is registered as a shadow too: it can
+create signals only through its own market anchor (wxbot/model/nowcast.py).
+A version that leaves the config becomes `retired`. Rows are never deleted,
+so every stored prediction can be traced to its model.
 """
 from __future__ import annotations
 
@@ -15,6 +17,7 @@ from wxbot.db import Database, model_versions
 from wxbot.features import FEATURE_SET
 from wxbot.model.baselines import Climatology, RawForecast
 from wxbot.model.normal import NormalMultiModel
+from wxbot.model.nowcast import Nowcast, load_params
 
 
 def production_model(cfg) -> NormalMultiModel:
@@ -34,6 +37,14 @@ def shadow_models(cfg) -> list:
     return [known[v]() for v in m.get("shadow_models", [])]
 
 
+def nowcast_model(cfg) -> Nowcast | None:
+    """The same-day model ([nowcast], wxbot/model/nowcast.py), or None when it is off."""
+    c = cfg.get("nowcast")
+    if not c or not c.enabled:
+        return None
+    return Nowcast(load_params(), c.prob_floor, c.prob_ceiling, c.max_report_age_minutes, c.min_models)
+
+
 def sync_registry(db: Database, production, shadows: list, now: datetime) -> list[str]:
     """Make the registry match the running models; returns what changed."""
     mv = model_versions.c
@@ -50,7 +61,8 @@ def sync_registry(db: Database, production, shadows: list, now: datetime) -> lis
             if version not in current:
                 conn.execute(model_versions.insert().values(
                     name=m.name, version=version, calibration_version=m.calibration_version,
-                    feature_set=FEATURE_SET, params=m.params, role=role, created_at=now, role_changed_at=now))
+                    feature_set=getattr(m, "feature_set", FEATURE_SET), params=m.params, role=role, created_at=now,
+                    role_changed_at=now))
                 changes.append(f"{version} registered as {role}")
             elif current[version] != role:
                 conn.execute(update(model_versions).where(mv.version == version).values(role=role, role_changed_at=now))
