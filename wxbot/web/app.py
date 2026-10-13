@@ -21,7 +21,9 @@ from wxbot.evaluation.errors import error_analysis
 from wxbot.execution.portfolio import latest_snapshots, open_positions
 from wxbot.experiment import starting_bankroll
 from wxbot.export import export_zip_bytes, table_csv
+from wxbot import research
 from wxbot.health import system_health
+from wxbot.learning import summary as learning_summary
 from wxbot.report import build_report, to_markdown
 
 TEMPLATE = Path(__file__).parent / "templates" / "index.html"
@@ -123,6 +125,10 @@ def create_app(cfg, db: Database, runner=None, now=utcnow) -> FastAPI:
     def errors():
         return error_analysis(db)
 
+    @app.get("/api/learning", dependencies=deps)
+    def learning():
+        return {**learning_summary(db), "settings": cfg.learning.as_dict()}
+
     @app.get("/api/performance", dependencies=deps)
     def performance():
         return metrics.performance_series(db, initial())
@@ -167,15 +173,23 @@ def create_app(cfg, db: Database, runner=None, now=utcnow) -> FastAPI:
 
     @app.get("/api/report", dependencies=deps)
     def report():
-        return build_report(db, initial())
+        return build_report(db, initial(), cfg=cfg)
 
     @app.get("/export/report.md", response_class=PlainTextResponse, dependencies=deps)
     def report_md():
-        return to_markdown(build_report(db, initial()))
+        return to_markdown(build_report(db, initial(), cfg=cfg))
+
+    @app.get("/api/research", dependencies=deps)
+    def research_report():
+        return research.build(db, initial())
+
+    @app.get("/export/research.md", response_class=PlainTextResponse, dependencies=deps)
+    def research_md():
+        return research.to_markdown(research.build(db, initial()))
 
     @app.get("/export/all.zip", dependencies=deps)
     def export_all():
-        data = export_zip_bytes(db, build_report(db, initial()))
+        data = export_zip_bytes(db, build_report(db, initial(), cfg=cfg))
         stamp = utcnow().strftime("%Y%m%d-%H%M")
         return Response(data, media_type="application/zip",
                         headers={"Content-Disposition": f'attachment; filename="wxbot-export-{stamp}.zip"'})

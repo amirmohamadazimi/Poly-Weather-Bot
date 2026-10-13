@@ -5,11 +5,11 @@ import logging
 import threading
 
 from wxbot.data.polymarket import PolymarketClient
-from wxbot.data.weather import IEMObservations, OpenMeteoForecast
+from wxbot.data.weather import IEMObservations, OpenMeteoForecast, OpenMeteoPreviousRuns
 from wxbot.db import Database, utcnow
 from wxbot.engine import Engine
 from wxbot.execution.paper import make_broker
-from wxbot.model.registry import production_model, shadow_models
+from wxbot.model.registry import nowcast_model, production_model, shadow_models
 from wxbot.strategy.sizing import make_sizer
 
 log = logging.getLogger("wxbot.runner")
@@ -24,8 +24,10 @@ def build_engine(cfg, db: Database | None = None) -> Engine:
         observer=IEMObservations(),
         predictor=production_model(cfg),
         shadows=shadow_models(cfg),
+        nowcast=nowcast_model(cfg),     # same-day model, a forward test (wxbot/model/nowcast.py)
         broker=make_broker(cfg, db),
         sizer=make_sizer(cfg),
+        history=OpenMeteoPreviousRuns(list(cfg.weather.models)),   # retraining (wxbot/learning/)
     )
 
 
