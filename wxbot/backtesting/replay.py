@@ -30,7 +30,7 @@ from __future__ import annotations
 import bisect
 import statistics
 from collections import defaultdict
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 
 from sqlalchemy import select
 
@@ -60,7 +60,7 @@ def utc(t) -> datetime | None:
         return None
     if isinstance(t, str):
         t = datetime.fromisoformat(t)
-    return t.replace(tzinfo=timezone.utc) if t.tzinfo is None else t.astimezone(timezone.utc)
+    return t.replace(tzinfo=UTC) if t.tzinfo is None else t.astimezone(UTC)
 
 
 def lead_hours(lead: int, delay_hours: float) -> float:

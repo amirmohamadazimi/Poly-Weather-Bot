@@ -1,16 +1,25 @@
-# systemd unit for running without Docker:
+# systemd unit for running without Docker (docs/deploy.md, "Without Docker"):
 #   sudo cp deploy/wxbot.service /etc/systemd/system/ && sudo systemctl enable --now wxbot
+# It assumes the repository is at /opt/Poly-Weather-Bot with a virtualenv in .venv,
+# owned by a `wxbot` user. PAPER TRADING ONLY: app.mode is forced to paper below.
 [Unit]
 Description=Polymarket weather paper-trading bot
+Wants=network-online.target
 After=network-online.target
 
 [Service]
-WorkingDirectory=/opt/polymarket-weather-bot
-EnvironmentFile=-/opt/polymarket-weather-bot/.env
-ExecStart=/opt/polymarket-weather-bot/.venv/bin/python main.py
+User=wxbot
+WorkingDirectory=/opt/Poly-Weather-Bot
+EnvironmentFile=-/opt/Poly-Weather-Bot/.env
+Environment=WXBOT_APP__MODE=paper
+# first start: load observation history and fit the station bias/spread, as the
+# Docker image does; both skip once done, and a failure (`-`) is retried next start
+ExecStartPre=-/opt/Poly-Weather-Bot/.venv/bin/python main.py climatology --if-missing --years 3
+ExecStartPre=-/opt/Poly-Weather-Bot/.venv/bin/python main.py backtest --if-missing
+TimeoutStartSec=30min
+ExecStart=/opt/Poly-Weather-Bot/.venv/bin/python main.py
 Restart=always
 RestartSec=10
-User=wxbot
 
 [Install]
 WantedBy=multi-user.target

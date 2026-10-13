@@ -80,7 +80,8 @@ def run_backtest(cfg, db: Database, forecaster, observer, stations: list[str] | 
                        params={"stations": codes, "days": days, "leads": list(leads), "start": start.isoformat(),
                                "end": end.isoformat(), "models": list(forecaster.models)})
     pairs_all: list[tuple[float, int]] = []
-    per_station, fitted = {}, []
+    per_station: dict[str, dict] = {}
+    fitted: list[dict] = []
     for code in codes:
         st = STATIONS[code]
         try:
@@ -91,7 +92,7 @@ def run_backtest(cfg, db: Database, forecaster, observer, stations: list[str] | 
             per_station[code] = {"error": str(exc)}
             continue
         unit = unit_for(st)
-        stats = {}
+        stats: dict[str, dict] = {}
         for lead in leads:
             for kind in ("high", "low"):
                 rows = []  # (date, values, obs_c)
@@ -114,7 +115,7 @@ def run_backtest(cfg, db: Database, forecaster, observer, stations: list[str] | 
                                    "window_end": end.isoformat()})
                     stats[key] = {"n": len(errors), "bias_c": round(bias, 3), "sigma_c": round(sigma, 3),
                                   "walk_forward_mae_c": round(statistics.fmean(abs_err), 3) if abs_err else None,
-                                  "brier": brier(*zip(*pairs)) if pairs else None}
+                                  "brier": brier([p for p, _ in pairs], [y for _, y in pairs]) if pairs else None}
                 else:
                     stats[key] = {"n": len(errors), "note": "too few days to fit"}
         per_station[code] = stats

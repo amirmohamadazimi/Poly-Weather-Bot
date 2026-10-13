@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import tomllib
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -44,12 +45,12 @@ class Config:
         return json.loads(json.dumps(self._data))
 
 
-def load_config(path: str | os.PathLike | None = None, env: dict | None = None) -> Config:
-    env = os.environ if env is None else env
-    path = Path(path or env.get("WXBOT_CONFIG") or ROOT / "config.toml")
+def load_config(path: str | os.PathLike | None = None, env: Mapping[str, str] | None = None) -> Config:
+    environ: Mapping[str, str] = os.environ if env is None else env
+    path = Path(path or environ.get("WXBOT_CONFIG") or ROOT / "config.toml")
     with open(path, "rb") as fh:
         data = tomllib.load(fh)
-    for key, raw in env.items():
+    for key, raw in environ.items():
         if not key.startswith(ENV_PREFIX) or "__" not in key:
             continue
         section, _, name = key[len(ENV_PREFIX):].lower().partition("__")

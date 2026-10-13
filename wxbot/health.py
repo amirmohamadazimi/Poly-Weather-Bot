@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import desc, func, select
 
@@ -38,7 +38,7 @@ def as_utc(value) -> datetime | None:
             value = datetime.fromisoformat(value)
         except ValueError:
             return None
-    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
 def source_status(db: Database, cfg, now: datetime) -> list[dict]:
@@ -70,7 +70,7 @@ def source_status(db: Database, cfg, now: datetime) -> list[dict]:
 def database_status(db: Database) -> dict:
     out: dict = {"dialect": db.engine.dialect.name}
     try:
-        out["rows"] = {name: db.one(select(func.count().label("n")).select_from(t))["n"]
+        out["rows"] = {name: db.agg(select(func.count().label("n")).select_from(t))["n"]
                        for name, t in COUNTED_TABLES.items()}
         last = db.one(select(func.max(bankroll_snapshots.c.ts).label("t")))
         out["last_write"] = as_utc(last["t"]) if last else None

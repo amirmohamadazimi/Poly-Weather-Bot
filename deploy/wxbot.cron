@@ -1,0 +1,11 @@
+# Keep a server on the newest approved version and back up its database
+# (docs/deploy.md). Install with:
+#   sudo cp deploy/wxbot.cron /etc/cron.d/wxbot
+# It assumes the repository is at /opt/Poly-Weather-Bot.
+SHELL=/bin/sh
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# every hour: deploy the newest commit of main that passed CI, if it changed
+17 * * * * root flock -n /run/wxbot-deploy.lock /opt/Poly-Weather-Bot/deploy/update.sh >> /var/log/wxbot-deploy.log 2>&1
+# every day: a database backup (each deploy makes one too)
+47 3 * * * root flock /run/wxbot-deploy.lock /opt/Poly-Weather-Bot/deploy/backup.sh daily >> /var/log/wxbot-deploy.log 2>&1
