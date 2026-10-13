@@ -2,7 +2,7 @@
 scores against the market, and the betting rules on historical prices."""
 import json
 import math
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 from sqlalchemy import select
@@ -18,7 +18,7 @@ from wxbot.data import polymarket as pm_module
 from wxbot.data.polymarket import PolymarketClient
 from wxbot.db import Database, backtest_predictions, backtest_runs, historical_forecasts, weather_observations
 
-UTC = timezone.utc
+UTC = UTC
 DAYS = ["2026-09-20", "2026-09-21", "2026-09-22"]
 LABELS = ["12°C or below"] + [f"{x}°C" for x in range(13, 22)] + ["22°C or higher"]
 JUMP_HOUR = 10   # prices jump to the result at 10:00 UTC on the market day, after every decision

@@ -25,7 +25,7 @@ from __future__ import annotations
 import math
 import random
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, select
@@ -58,7 +58,7 @@ def identity() -> Calibrator:
 
 
 def _utc(t: datetime) -> datetime:
-    return t if t.tzinfo else t.replace(tzinfo=timezone.utc)
+    return t if t.tzinfo else t.replace(tzinfo=UTC)
 
 
 def day_end(station: str, local_date: str) -> datetime | None:
@@ -67,7 +67,7 @@ def day_end(station: str, local_date: str) -> datetime | None:
     if st is None or not local_date:
         return None
     end = datetime.combine(date.fromisoformat(local_date) + timedelta(days=1), datetime.min.time(), ZoneInfo(st.tz))
-    return end.astimezone(timezone.utc)
+    return end.astimezone(UTC)
 
 
 def training_set(db: Database, model_version: str, fit_time: datetime, min_lead_hours: float,
@@ -99,10 +99,18 @@ def _loss(p: float, o: int) -> float:
     return -math.log(p) if o else -math.log(1 - p)
 
 
-def gain_confidence(raw: list[float], cal: list[float], outcomes: list[int], seed: int = 7) -> float:
+def gain_confidence(raw: list[float], cal: list[float], outcomes: list[int], seed: int = 7,
+                    groups: list | None = None) -> float:
     """Share of bootstrap resamples of the holdout in which the calibrated
-    probabilities have the lower mean log loss (deterministic: fixed seed)."""
+    probabilities have the lower mean log loss (deterministic: fixed seed).
+    With `groups` (one key per row) whole groups are resampled, for rows that
+    are not independent, such as several predictions of one market."""
     gains = [_loss(r, o) - _loss(c, o) for r, c, o in zip(raw, cal, outcomes)]
+    if groups is not None:
+        summed: dict = {}
+        for g, x in zip(groups, gains):
+            summed[g] = summed.get(g, 0.0) + x
+        gains = list(summed.values())
     rng, n = random.Random(seed), len(gains)
     wins = sum(sum(gains[rng.randrange(n)] for _ in range(n)) > 0 for _ in range(BOOTSTRAP))
     return wins / BOOTSTRAP

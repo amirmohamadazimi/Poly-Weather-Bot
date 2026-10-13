@@ -22,7 +22,7 @@ from datetime import date, datetime
 
 from sqlalchemy import desc, or_, select, update
 
-from wxbot.db import Database, calibration_params, param_sets
+from wxbot.db import Database, calibration_params, inserted_id, param_sets
 from wxbot.model.base import Calibration
 from wxbot.model.normal import default_calibration
 
@@ -119,9 +119,9 @@ def store(db: Database, *, version: str, model_version: str, origin: str, status
     bias_c, sigma_c, n, window_start, window_end)."""
     keep = ("station", "kind", "lead_days", "bias_c", "sigma_c", "n", "window_start", "window_end")
     with db.engine.begin() as conn:
-        set_id = conn.execute(param_sets.insert().values(
+        set_id = inserted_id(conn.execute(param_sets.insert().values(
             version=version, model_version=model_version, created_at=now, origin=origin, status=status,
-            n_rows=len(rows), legacy=False, **fields)).inserted_primary_key[0]
+            n_rows=len(rows), legacy=False, **fields)))
         if rows:
             conn.execute(calibration_params.insert(), [
                 {**{k: r[k] for k in keep}, "fitted_at": now, "param_set_id": set_id,

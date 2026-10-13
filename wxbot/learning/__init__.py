@@ -46,7 +46,7 @@ def summary(db: Database, limit: int = 20) -> dict:
         "sets": [{k: ps[k] for k in SET_FIELDS} for ps in params.history(db, limit)],
         "last_retrain": _state(db, "last_retrain"), "next_retrain": db.get_state("next_retrain_at"),
         "last_rollback_check": _state(db, "last_rollback_check"),
-        "ledger_rows": db.one(select(func.count().label("n")).select_from(prediction_outcomes))["n"],
+        "ledger_rows": db.agg(select(func.count().label("n")).select_from(prediction_outcomes))["n"],
         "events": db.rows(select(ev.ts, ev.level, ev.code, ev.message).where(ev.code.in_(EVENT_CODES))
                           .order_by(desc(ev.id)).limit(limit)),
     }

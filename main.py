@@ -16,6 +16,7 @@
     python main.py climatology   # load --years of observed highs/lows for the climatology baseline
                                  #   (--if-missing: only when no history was loaded yet)
     python main.py report        # print the performance report
+    python main.py research      # print the experiment's research report: did it find positive EV?
     python main.py export DIR    # write every table as CSV (+ report.json) to DIR
 
 PAPER TRADING ONLY. No code in this project can place a real order.
@@ -45,7 +46,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("command", nargs="?", default="run",
                         choices=["run", "once", "worker", "web", "backtest", "backtest-markets", "calibrate",
-                                 "retrain", "rollback", "climatology", "report", "export"])
+                                 "retrain", "rollback", "climatology", "report", "research", "export"])
     parser.add_argument("path", nargs="?",
                         help="export: output directory; backtest-markets: also write the report as JSON here")
     parser.add_argument("--config", help="path to config.toml")
@@ -65,24 +66,28 @@ def main(argv: list[str] | None = None) -> int:
     if cfg.app.mode != "paper":
         # make_broker() refuses anything but paper; fail before touching anything else
         from wxbot.execution.paper import make_broker
-        make_broker(cfg, None)
-    research = args.command == "backtest-markets"  # its own database, never an experiment's
-    url = cfg.backtest.database_url if research else cfg.app.database_url
+        make_broker(cfg, None)  # type: ignore[arg-type]   # only checks the mode: raises before using a database
+    own_db = args.command == "backtest-markets"  # its own database, never an experiment's
+    url = cfg.backtest.database_url if own_db else cfg.app.database_url
     db = Database(url)
     print(BANNER.format(mode=cfg.app.mode.upper(), initial=cfg.bankroll.initial, db=url.split("@")[-1]),
           file=sys.stderr)
-    if research:
+    if own_db:
         return backtest_markets(cfg, db, args)
 
     from wxbot.experiment import starting_bankroll
     if args.command == "report":
         from wxbot.report import build_report, to_markdown
-        print(to_markdown(build_report(db, starting_bankroll(db, cfg))))
+        print(to_markdown(build_report(db, starting_bankroll(db, cfg), cfg=cfg)))
+        return 0
+    if args.command == "research":
+        from wxbot import research
+        print(research.to_markdown(research.build(db, starting_bankroll(db, cfg))))
         return 0
     if args.command == "export":
         from wxbot.export import export_to_dir
         from wxbot.report import build_report
-        out = export_to_dir(db, args.path or "exports", build_report(db, starting_bankroll(db, cfg)))
+        out = export_to_dir(db, args.path or "exports", build_report(db, starting_bankroll(db, cfg), cfg=cfg))
         print(f"exported to {out.resolve()}")
         return 0
     if args.command == "backtest":
@@ -101,9 +106,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "rollback":
         from wxbot.db import utcnow
         from wxbot.learning.retrain import manual_rollback
-        out = manual_rollback(db, utcnow())
-        print(json.dumps(out, indent=2))
-        return 1 if "error" in out else 0
+        result = manual_rollback(db, utcnow())
+        print(json.dumps(result, indent=2))
+        return 1 if "error" in result else 0
 
     if args.command == "web":  # read-only: no engine, so nothing is written to the database
         from wxbot.web.app import create_app
@@ -184,8 +189,8 @@ def backtest_markets(cfg, db: Database, args) -> int:
 
 def serve(cfg, app) -> None:
     import uvicorn
-    print(f"Dashboard: http://{'localhost' if cfg.app.host in ('127.0.0.1', '0.0.0.0') else cfg.app.host}:{cfg.app.port}",
-          file=sys.stderr)
+    host = "localhost" if cfg.app.host in ("127.0.0.1", "0.0.0.0") else cfg.app.host
+    print(f"Dashboard: http://{host}:{cfg.app.port}", file=sys.stderr)
     uvicorn.run(app, host=cfg.app.host, port=cfg.app.port, log_level=cfg.app.log_level.lower(), access_log=False)
 
 

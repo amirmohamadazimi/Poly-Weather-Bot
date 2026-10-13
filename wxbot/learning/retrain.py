@@ -40,6 +40,7 @@ import math
 import random
 from collections import defaultdict
 from datetime import date, datetime, timedelta
+from typing import Any
 
 from sqlalchemy import func, select
 
@@ -109,7 +110,8 @@ def compare(rows: list[dict], new: params.Params, old: params.Params, cfg, new_p
     return {
         "n": len(rows), "n_events": len({x["event_id"] for x in rows}), "n_stations": len({x["station"] for x in rows}),
         "from": rows[0]["local_date"] if rows else None, "to": rows[-1]["local_date"] if rows else None,
-        "brier_new": _mean((p - y) ** 2 for p, y in zip(pn, ys)), "brier_old": _mean((p - y) ** 2 for p, y in zip(po, ys)),
+        "brier_new": _mean((p - y) ** 2 for p, y in zip(pn, ys)),
+        "brier_old": _mean((p - y) ** 2 for p, y in zip(po, ys)),
         "log_loss_new": _mean(_loss(p, y) for p, y in zip(pn, ys)),
         "log_loss_old": _mean(_loss(p, y) for p, y in zip(po, ys)),
         "log_loss_used": _mean(_loss(p, y) for p, y in zip(used, ys)),
@@ -194,7 +196,7 @@ def retrain(db: Database, cfg, history, observer, now: datetime, force: bool = F
 
     old_probs = reprice(holdout, current, cfg)
     stamp = now.strftime("%Y%m%dT%H%M%S")
-    candidates = []
+    candidates: list[dict[str, Any]] = []
     for days in windows:
         rows = []
         for code, (fc, obs) in fetched.items():
@@ -211,7 +213,7 @@ def retrain(db: Database, cfg, history, observer, now: datetime, force: bool = F
     approved = [c for c in candidates if c["approved"]]
     chosen = min(approved, key=lambda c: c["evaluation"]["log_loss_new"]) if approved else None
     for c in candidates:
-        if c["approved"] and c is not chosen:
+        if chosen is not None and c["approved"] and c is not chosen:
             c["reason"] = f"approved, but {chosen['version']} did better: " + c["reason"]
         c["id"] = params.store(
             db, version=c["version"], model_version=model_version, origin="retrain", status="rejected",

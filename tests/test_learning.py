@@ -1,7 +1,7 @@
 """v2 M9: the learning ledger, versioned bias/spread param sets, retraining with
 an out-of-sample approval rule, and rollback."""
 import json
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 from sqlalchemy import select
@@ -16,7 +16,7 @@ from wxbot.db import (
 from wxbot.learning import outcomes, params, retrain
 from wxbot.model.registry import production_model
 
-UTC = timezone.utc
+UTC = UTC
 NOW = datetime(2026, 10, 10, 12, tzinfo=UTC)
 STATIONS = ["EGLC", "LFPG", "LEMD", "EDDM", "LIMC", "EPWA"]
 HOLDOUT = [date(2026, 10, 2) + timedelta(days=k) for k in range(7)]
@@ -215,8 +215,8 @@ def test_retraining_deploys_a_set_that_is_better_out_of_sample(cfg):
     assert ev["log_loss_new"] < ev["log_loss_old"] and ev["brier_new"] < ev["brier_old"]
     assert params.get(db, version=old["version"])["status"] == "previous"   # kept for a rollback
     assert len(db.rows(select(param_sets).where(param_sets.c.origin == "retrain"))) == 3   # every window stored
-    assert all(r["window_end"] == "2026-09-28" for r in db.rows(select(calibration_params)
-                                                                 .where(calibration_params.c.param_set_id == new["id"])))
+    new_rows = db.rows(select(calibration_params).where(calibration_params.c.param_set_id == new["id"]))
+    assert all(r["window_end"] == "2026-09-28" for r in new_rows)
     cal = params.load(db, cfg, new).calibration("EGLC", "high", 1)
     assert cal.bias_c == pytest.approx(2.0, abs=0.1)
     assert len(events(db, "MODEL_RETRAINED")) == 1 and len(events(db, "MODEL_DEPLOYED")) == 1
