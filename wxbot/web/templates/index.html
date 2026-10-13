@@ -74,6 +74,7 @@
     <a class="btn" href="/export/all.zip">Export everything (zip)</a>
     <a class="btn" href="/export/paper_bets.csv">Bets CSV</a>
     <a class="btn" href="/export/report.md">Report (markdown)</a>
+    <a class="btn" href="/export/research.md">Research report (markdown)</a>
   </div>
 </section>
 
@@ -131,7 +132,7 @@
   <p class="note" id="cmpNote"></p>
   <div class="tablewrap"><table id="cmpTbl"></table></div>
   <h2>Scores by market day</h2>
-  <p class="note">The daily charts as a table. Each day is scored on the markets that had a market price when the decision prediction was made (its last made a day or more ahead), so model and market are compared on the same markets. Lower Brier and log loss are better.</p>
+  <p class="note">The daily charts as a table. Each day is scored on the markets that had a market price and passed the liquidity check when the decision prediction was made (its last made a day or more ahead), so model and market are compared on the same markets. A thin market's mid price is a placeholder, not a forecast, so those markets are left out. Lower Brier and log loss are better.</p>
   <div class="tablewrap"><table id="dayTbl"></table></div>
 </section>
 
@@ -388,11 +389,11 @@ async function loadPerf() {
   chart("cLL", {type: "line", data: {labels, datasets: [line("Model (raw)", days.map(r => r.log_loss_model), s1), line("As used (calibrated)", days.map(r => r.log_loss_used), s3, [2, 3]), line("Market", days.map(r => r.log_loss_market), s2, [6, 4])]}, options: opts("Log loss by market day (lower is better)", true)});
   chart("cAcc", {type: "line", data: {labels, datasets: [line("Model", days.map(r => r.top_bucket_model), s1), line("Market", days.map(r => r.top_bucket_market), s2, [6, 4])]},
     options: opts("Accuracy: the most likely bucket won (share of events)", true, {min: 0, max: 1})});
-  $("#calNote").textContent = `${pc.n} resolved markets · Brier model ${num(pc.brier_model, 4)} vs market ${num(pc.brier_market, 4)} · log loss ${num(pc.log_loss_model, 4)} · calibration error ${num(pc.ece_model, 4)}` +
+  $("#calNote").textContent = `${pc.n} resolved markets · Brier model ${num(pc.brier_model, 4)} · log loss ${num(pc.log_loss_model, 4)} · calibration error ${num(pc.ece_model, 4)} · on the ${pc.n_market} liquid markets, Brier model ${num(pc.brier_model_on_market, 4)} vs market ${num(pc.brier_market, 4)}` +
     (pc.n_calibrated ? ` · after calibration (${pc.n_calibrated} markets): Brier ${num(pc.brier_calibrated, 4)}, log loss ${num(pc.log_loss_calibrated, 4)}` : " · no approved calibrator yet, so the raw probabilities were used");
   table($("#calTbl"), [{h: "Predicted", f: r => r.bin}, {h: "n", n: 1, f: r => r.n}, {h: "Mean predicted", n: 1, f: r => pct(r.mean_pred)}, {h: "Observed", n: 1, f: r => pct(r.observed)}], bins);
   const mc = d.model_comparison;
-  $("#cmpNote").textContent = `Every model's prediction from the same cycle as the production model's last prediction made ${mc.min_lead_days}+ day ahead, on ${mc.n_markets} resolved markets. Each row is scored on the markets that model predicted, and the production columns on exactly those markets.`;
+  $("#cmpNote").textContent = `Every model's prediction from the same cycle as the production model's last prediction made ${mc.min_lead_days}+ day ahead, on ${mc.n_markets} resolved markets. Each row is scored on the markets that model predicted, and the production columns on exactly those markets; the market price only on markets that passed the liquidity check.`;
   table($("#cmpTbl"), [{h: "Model", f: r => esc(r.model)}, {h: "Role", f: r => r.role}, {h: "Markets", n: 1, f: r => r.n},
     {h: "Brier", n: 1, f: r => num(r.brier, 4)}, {h: "Log loss", n: 1, f: r => num(r.log_loss, 4)},
     {h: "Production Brier", n: 1, f: r => num(r.production_brier, 4)}, {h: "Production log loss", n: 1, f: r => num(r.production_log_loss, 4)}], mc.models);
@@ -410,7 +411,7 @@ const predCols = [
   {h: "Bias", n: 1, f: r => (r.bias >= 0 ? "+" : "") + (r.bias * 100).toFixed(1) + " pts"},
   {h: "Confident", n: 1, f: r => pct(r.confidence)}, {h: "Right side", n: 1, f: r => pct(r.right_side)},
   {h: "Brier", n: 1, f: r => num(r.brier, 4)}, {h: "Log loss", n: 1, f: r => num(r.log_loss, 4)},
-  {h: "Brier vs market", n: 1, t: "Model and market Brier on the markets that had a price", f: r => r.n_market ? `${num(r.brier_model_paired, 4)} / ${num(r.brier_market, 4)}` : "–",
+  {h: "Brier vs market", n: 1, t: "Model and market Brier on the markets that had a price and passed the liquidity check", f: r => r.n_market ? `${num(r.brier_model_paired, 4)} / ${num(r.brier_market, 4)}` : "–",
    c: r => r.brier_model_paired == null ? "" : r.brier_model_paired > r.brier_market ? "neg" : "pos"},
   {h: "Big misses", n: 1, t: "Significant overconfidence or underestimation", f: r => r.significant_errors},
   {h: "Flags", f: flagText},
@@ -450,7 +451,7 @@ async function loadLearning() {
   const e = await get("/api/errors");
   $("#lrnNote").textContent = `${e.n} resolved markets, each scored on the production model's last prediction made ${e.min_lead_days}+ day before the target day, and ${e.bets.n} settled bets. ` +
     `A group is flagged only with at least ${e.min_group} markets (${e.min_bet_group} bets) and a gap of at least ${e.flag_z} standard errors, so chance alone rarely flags one. ` +
-    "Overconfident: more sure of the side it predicted than that side's hit rate. YES too often or too rarely: the bias. Worse than the market: a higher Brier score than the market price on the same markets.";
+    "Overconfident: more sure of the side it predicted than that side's hit rate. YES too often or too rarely: the bias. Worse than the market: a higher Brier score than the market price on the same markets that passed the liquidity check.";
   if (e.weaknesses.length)
     table($("#weakTbl"), [{h: "Where", f: r => r.scope}, {h: "Breakdown", f: r => esc(r.dimension)},
       {h: "Group", f: r => esc(r.group)}, {h: "n", n: 1, f: r => r.n}, {h: "Weakness", f: r => r.flag, c: () => "neg"},

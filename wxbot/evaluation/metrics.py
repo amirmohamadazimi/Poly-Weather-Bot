@@ -17,6 +17,22 @@ from wxbot.db import (
 
 # rows from before v2 M4 have no role: they were all made by the production model
 PRODUCTION = or_(predictions.c.role.is_(None), predictions.c.role == "production")
+
+
+def liquid(rule_results) -> bool:
+    """Whether a signal's market passed the bot's liquidity check (strategy.min_liquidity_usd)."""
+    return any(rr.get("rule") == "liquidity" and rr.get("passed") for rr in rule_results or [])
+
+
+def market_yes(sig: dict | None) -> float | None:
+    """The market's YES probability from a signal (its mid price): the benchmark
+    the model is compared against. None without a price, and for a market that
+    failed the liquidity check: there the mid of a near-empty book is a
+    placeholder (often 0.34 or 0.40), not a forecast, and counting it makes any
+    model look better than the market."""
+    if not sig or sig.get("market_prob") is None or not liquid(sig.get("rule_results")):
+        return None
+    return sig["market_prob"] if sig["side"] == "YES" else 1 - sig["market_prob"]
 LOG_LOSS_EPS = 1e-3  # probabilities are clipped to [eps, 1 - eps] so one certain miss is not infinite
 
 
@@ -224,13 +240,14 @@ def prediction_calibration(db: Database, min_lead_days: int = 1) -> dict:
     probs = [x["p_yes"] for x in rows]
     cal = [x["p_yes"] if x["calibrated_prob"] is None else x["calibrated_prob"] for x in rows]
     outs = [1 if x["outcome"] == "YES" else 0 for x in rows]
-    # market benchmark: mid-implied YES probability on the signal made from the same prediction
+    # market benchmark: mid-implied YES probability on the signal made from the same prediction, liquid markets
     s = signals.c
     mk = {}
-    for x in db.rows(select(s.market_id, s.side, s.market_prob).join(latest, latest.c.pid == s.prediction_id)):
-        if x["market_prob"] is not None:
-            mk[x["market_id"]] = x["market_prob"] if x["side"] == "YES" else 1 - x["market_prob"]
-    paired = [(mk[x["market_id"]], o) for x, o in zip(rows, outs) if x["market_id"] in mk]
+    for x in db.rows(select(s.market_id, s.side, s.market_prob, s.rule_results)
+                     .join(latest, latest.c.pid == s.prediction_id)):
+        if (m := market_yes(x)) is not None:
+            mk[x["market_id"]] = m
+    paired = [(mk[x["market_id"]], c, o) for x, c, o in zip(rows, cal, outs) if x["market_id"] in mk]
     return {
         "n": len(rows), "brier_model": brier(probs, outs), "log_loss_model": log_loss(probs, outs),
         "ece_model": ece(probs, outs),
@@ -238,7 +255,11 @@ def prediction_calibration(db: Database, min_lead_days: int = 1) -> dict:
         "n_calibrated": sum(x["calibrator_version"] not in (None, "identity") for x in rows),
         "brier_calibrated": brier(cal, outs), "log_loss_calibrated": log_loss(cal, outs),
         "ece_calibrated": ece(cal, outs), "bins_calibrated": calibration_bins(cal, outs),
-        "brier_market": brier([a for a, _ in paired], [o for _, o in paired]), "n_market": len(paired),
+        # model (as used) and market on the same liquid markets
+        "brier_market": brier([m for m, _, _ in paired], [o for _, _, o in paired]), "n_market": len(paired),
+        "brier_model_on_market": brier([c for _, c, _ in paired], [o for _, _, o in paired]),
+        "log_loss_market": log_loss([m for m, _, _ in paired], [o for _, _, o in paired]),
+        "log_loss_model_on_market": log_loss([c for _, c, _ in paired], [o for _, _, o in paired]),
         "bins": calibration_bins(probs, outs),
     }
 
@@ -256,7 +277,8 @@ def resolved_rows(db: Database, min_lead_days: int = 1, per_lead: bool = False) 
     (its last made `min_lead_days`+ days ahead), the market, the outcome `y`, the
     probability the rules used (`used`: calibrated, or raw without a calibrator),
     and the market's mid-implied YES probability (`market_yes`) and liquidity from
-    the signal made from that same prediction. per_lead=True instead gives one
+    the signal made from that same prediction (None for a market that failed the
+    liquidity check: see market_yes()). per_lead=True instead gives one
     row per market and lead time: the last prediction made at each lead."""
     p, r, mk, s = predictions.c, market_resolutions.c, markets.c, signals.c
     if per_lead:
@@ -277,8 +299,7 @@ def resolved_rows(db: Database, min_lead_days: int = 1, per_lead: bool = False) 
         x["y"] = 1 if x["outcome"] == "YES" else 0
         x["used"] = x["p_yes"] if x["calibrated_prob"] is None else x["calibrated_prob"]
         sig = sigs.get(x["prediction_id"]) or {}
-        mp = sig.get("market_prob")
-        x["market_yes"] = None if mp is None else (mp if sig["side"] == "YES" else 1 - mp)
+        x["market_yes"] = market_yes(sig)
         x["liquidity"] = next((rr.get("value") for rr in sig.get("rule_results") or []
                                if rr.get("rule") == "liquidity"), None)
     return rows
@@ -347,9 +368,10 @@ def model_comparison(db: Database, min_lead_days: int = 1) -> dict:
             if x["calibrator_version"] not in (None, "identity"):
                 calibrated[x["model_version"] + " calibrated"][x["market_id"]] = x["calibrated_prob"]
     market: dict[str, float] = {}
-    for x in db.rows(select(s.market_id, s.side, s.market_prob).join(moment, moment.c.pid == s.prediction_id)):
-        if x["market_prob"] is not None:
-            market[x["market_id"]] = x["market_prob"] if x["side"] == "YES" else 1 - x["market_prob"]
+    for x in db.rows(select(s.market_id, s.side, s.market_prob, s.rule_results)
+                     .join(moment, moment.c.pid == s.prediction_id)):
+        if (m := market_yes(x)) is not None:
+            market[x["market_id"]] = m
     roles = {x["version"]: x["role"] for x in db.rows(select(model_versions.c.version, model_versions.c.role))}
     out = []
     for version, probs in sorted({**by_model, **calibrated}.items()):

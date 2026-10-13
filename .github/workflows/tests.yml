@@ -77,3 +77,5 @@ jobs:
           mkdir -p /tmp/ci
           python main.py report | tee report.md
           grep -q "PAPER TRADING" report.md
+          python main.py research | tee research.md
+          grep -q "# Research report: no experiment yet" research.md
