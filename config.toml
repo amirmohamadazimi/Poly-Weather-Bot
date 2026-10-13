@@ -26,6 +26,11 @@ autostart = true            # start the autonomous loop when the app starts
 # starting bankroll, code version and these settings. One database holds one
 # experiment: a different starting bankroll on an existing database is refused.
 name = "paper-100"
+# Length in days (0 = no end). After it the bot opens no new bets; open ones
+# still settle, and once the last has, the experiment is complete. Recorded with
+# the experiment the first time it is set, so a later config change cannot move
+# the end of an experiment already under way.
+days = 0
 
 [bankroll]
 # Virtual dollars. Experiment 1 ($1,000) runs frozen code with its own config.
@@ -95,6 +100,42 @@ min_confidence = 0.95
 # isotonic blocks smaller than this are merged, so no step rests on a few markets
 isotonic_min_block = 20
 refit_hours = 24
+
+[market_anchor]
+# Bet only where the model adds something to the market price
+# (wxbot/calibration/anchor.py). The probability the rules use is the model's
+# combined with the market's mid price, fitted on resolved markets whose book
+# was tight. The fit is refitted at most every refit_hours and judged on the
+# newest holdout_fraction of those markets: it counts only if it beats the
+# market price alone there on both Brier score and log loss, with at least
+# min_markets markets and the log-loss gain holding in min_confidence of
+# bootstrap resamples. Until then no bet is placed (predictions and signals are
+# still recorded). false goes back to betting on the model alone.
+enabled = true
+max_spread = 0.05           # a book wider than this (YES ask - YES bid) is not a price
+min_markets = 300
+holdout_fraction = 0.3
+min_confidence = 0.95
+refit_hours = 24
+
+[nowcast]
+# Same-day model, a forward test (wxbot/model/nowcast.py): on a market's own
+# day it prices every bucket from the station's reports so far and the newest
+# hourly forecast. Its predictions are stored as a shadow model and scored
+# against the market price in REPORT.md. With bet = true it may also bet on
+# markets with min_hours_left..max_hours_left hours to the end of their day,
+# but only through its own market anchor (same rules as [market_anchor], fitted
+# on its own predictions), so never before it has beaten the market price on
+# resolved markets; with [market_anchor] off it never bets.
+enabled = true
+bet = true
+min_hours_left = 1
+max_hours_left = 18
+max_report_age_minutes = 120   # no prediction when the newest station report is older
+min_models = 2                 # forecast hours need this many models
+# it knows when a bucket is already ruled out, so it may go closer to 0 and 1
+prob_floor = 0.001
+prob_ceiling = 0.999
 
 [learning]
 # Retraining of the production model's station bias and error spread

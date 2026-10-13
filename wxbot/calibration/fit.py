@@ -99,10 +99,18 @@ def _loss(p: float, o: int) -> float:
     return -math.log(p) if o else -math.log(1 - p)
 
 
-def gain_confidence(raw: list[float], cal: list[float], outcomes: list[int], seed: int = 7) -> float:
+def gain_confidence(raw: list[float], cal: list[float], outcomes: list[int], seed: int = 7,
+                    groups: list | None = None) -> float:
     """Share of bootstrap resamples of the holdout in which the calibrated
-    probabilities have the lower mean log loss (deterministic: fixed seed)."""
+    probabilities have the lower mean log loss (deterministic: fixed seed).
+    With `groups` (one key per row) whole groups are resampled, for rows that
+    are not independent, such as several predictions of one market."""
     gains = [_loss(r, o) - _loss(c, o) for r, c, o in zip(raw, cal, outcomes)]
+    if groups is not None:
+        summed: dict = {}
+        for g, x in zip(groups, gains):
+            summed[g] = summed.get(g, 0.0) + x
+        gains = list(summed.values())
     rng, n = random.Random(seed), len(gains)
     wins = sum(sum(gains[rng.randrange(n)] for _ in range(n)) > 0 for _ in range(BOOTSTRAP))
     return wins / BOOTSTRAP
