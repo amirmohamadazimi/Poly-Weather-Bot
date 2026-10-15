@@ -60,15 +60,28 @@ jobs:
       - name: Restore database from the paper-data branch
         run: |
           mkdir -p "$STATE_DIR"
-          if git fetch --depth=1 origin "$STATE_BRANCH"; then
+          # Only a branch that does not exist starts a fresh experiment: if the lookup
+          # fails for any other reason the run stops, because the save step would
+          # otherwise replace the experiment with a new one.
+          rc=0
+          git ls-remote --exit-code --heads origin "$STATE_BRANCH" > /dev/null || rc=$?
+          if [ "$rc" = 2 ]; then
+            echo "no $STATE_BRANCH branch yet: starting a fresh experiment"
+          elif [ "$rc" != 0 ]; then
+            echo "::error::could not look up the $STATE_BRANCH branch (git ls-remote exit $rc); refusing to start over"
+            exit 1
+          else
+            git fetch --depth=1 origin "$STATE_BRANCH"
             git archive FETCH_HEAD | tar -x -C "$STATE_DIR"
             # saved gzipped; an older save holds the plain file, used as is
             if [ -f "$STATE_DIR/wxbot.sqlite3.gz" ]; then
               gunzip -f "$STATE_DIR/wxbot.sqlite3.gz"
             fi
+            if [ ! -f "$STATE_DIR/wxbot.sqlite3" ]; then
+              echo "::error::$STATE_BRANCH holds no database; refusing to start over"
+              exit 1
+            fi
             echo "restored: $(ls -la "$STATE_DIR")"
-          else
-            echo "no $STATE_BRANCH branch yet: starting a fresh experiment"
           fi
 
       - name: Fit calibration (first run only)

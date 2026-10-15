@@ -24,11 +24,12 @@ research/fit_weighted.py). P(bucket) is then taken as in normal-multimodel-v1.
 The errors come from Open-Meteo Previous Runs (previous_dayN: what each model
 forecast N days ahead) against the station's METAR highs and lows, refreshed
 once a day (wxbot/learning/model_stats.py). Lead L uses previous_day max(L, 1).
-Backtested on Jun 1 to Sep 26 2026 the day-ahead high's mean absolute error
-fell from 0.84 C (five-model mean with the same rolling bias) and 1.13 C (raw
-five-model mean) to 0.79 C. Against liquid market prices it is still the
-weaker forecast (README "Production model"), so it bets only through the market
-anchor like every production model.
+Backtested on Jun 1 to Sep 26 2026 (each day priced with the stats the bot
+would have had) the day-ahead high's mean absolute error fell from 0.89 C
+(normal-multimodel-v1), 0.86 C (five-model mean with the same rolling bias)
+and 1.18 C (raw five-model mean) to 0.81 C. Against liquid market prices it
+is still the weaker forecast (README "Production model"), so it bets only
+through the market anchor like every production model.
 """
 from __future__ import annotations
 
@@ -106,18 +107,20 @@ def combine(values_c: dict[str, float], stats: Stats) -> tuple[float, float, dic
     return mu, spread, {m: w / total for m, w in weights.items()}
 
 
-def walk(days: list[tuple[str, dict[str, float], float | None]]) -> tuple[Stats, list[dict]]:
+def walk(days: list[tuple[str, dict[str, float], float | None]],
+         states: list[tuple[str, Stats]] | None = None) -> tuple[Stats, list[dict]]:
     """Run through (day, {model: forecast_c}, observed_c or None) in date order.
     Each day is priced with what was known before it, then its observation
     updates the state. -> (the state after the last day, per-day records of
-    {day, mu, spread, sd, obs} for the days that could be priced)."""
+    {day, mu, spread, sd, obs} for the days that could be priced). With
+    `states`, the state after each observed day is appended to it as (day, Stats):
+    what a refresh whose window ended that day would load."""
     bias: dict[str, EW] = {}
     mse: dict[str, EW] = {}
     sd = EW(SD_HALF_LIFE)
     out, n_days, last = [], 0, None
     for day, values, obs in days:
-        state = Stats(bias={m: e.value for m, e in bias.items() if e.value is not None},
-                      mse={m: e.value for m, e in mse.items() if e.value is not None}, sd=_sqrt(sd.value))
+        state = _snapshot(bias, mse, sd)
         c = combine(values, state)
         if c is not None:
             out.append({"day": day, "mu": c[0], "spread": c[1], "sd": state.sd, "obs": obs})
@@ -131,10 +134,15 @@ def walk(days: list[tuple[str, dict[str, float], float | None]]) -> tuple[Stats,
             bias.setdefault(m, EW(BIAS_HALF_LIFE)).add(obs - v)
         if c is not None:
             sd.add((obs - c[0]) ** 2)
-    final = Stats(bias={m: e.value for m, e in bias.items() if e.value is not None},
-                  mse={m: e.value for m, e in mse.items() if e.value is not None},
-                  sd=_sqrt(sd.value), n_days=n_days, last_day=last)
-    return final, out
+        if states is not None:
+            states.append((day, _snapshot(bias, mse, sd, n_days, last)))
+    return _snapshot(bias, mse, sd, n_days, last), out
+
+
+def _snapshot(bias: dict[str, EW], mse: dict[str, EW], sd: EW, n_days: int = 0, last: str | None = None) -> Stats:
+    return Stats(bias={m: e.value for m, e in bias.items() if e.value is not None},
+                 mse={m: e.value for m, e in mse.items() if e.value is not None},
+                 sd=_sqrt(sd.value), n_days=n_days, last_day=last)
 
 
 def _sqrt(x: float | None) -> float | None:
@@ -186,8 +194,11 @@ class WeightedMultiModel:
         mu_u, sigma_u = c_to_unit(mu_c, bucket.unit), sigma_c * scale
         raw_p = bucket_probability(bucket, mu_u, sigma_u)
         p = min(self.prob_ceiling, max(self.prob_floor, raw_p))
+        raw = list(model_values_c.values())
         return Prediction(p_yes=p, mu_c=mu_c, sigma_c=sigma_c, model_version=self.version, inputs={
             "kind": kind, "lead_days": lead_days, "stats_lead": lead, "model_values_c": model_values_c,
+            # as normal-multimodel-v1 records it: the raw models' disagreement (error analysis, ledger)
+            "model_spread_c": round(statistics.pstdev(raw), 3) if len(raw) > 1 else 0.0,
             "weights": {m: round(w, 4) for m, w in weights.items()},
             "bias_c": {m: round(st.bias[m], 3) for m in weights}, "corrected_spread_c": round(spread, 3),
             "error_sd_c": round(st.sd, 3), "stats_days": st.n_days, "stats_last_day": st.last_day,

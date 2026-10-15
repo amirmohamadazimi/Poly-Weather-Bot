@@ -1,13 +1,16 @@
 """The v2 production model (weighted-multimodel-v1) and its daily bias refresh."""
+import statistics
 from datetime import date, datetime, timedelta
 
 import pytest
 from sqlalchemy import select
 
+from research.fit_weighted import priced_as_live
 from tests.conftest import NOW, Clock, FakeForecast, make_engine
 from wxbot.config import load_config
 from wxbot.data.polymarket import Bucket
-from wxbot.db import Database, model_stats, predictions
+from wxbot.db import Database, model_stats, predictions, signals
+from wxbot.engine import only_models
 from wxbot.features import build_features
 from wxbot.learning import model_stats as stats_refresh
 from wxbot.learning import retrain
@@ -95,6 +98,35 @@ def test_walk_learns_each_models_bias_and_prices_each_day_before_seeing_it():
     assert [(r["mu"], r["sd"]) for r in changed][n:] != [x[:2] for x in priced][n:]
 
 
+def test_walk_can_keep_the_state_after_every_observed_day():
+    data = series(40)
+    data[5] = (data[5][0], data[5][1], None)
+    states: list = []
+    final, _ = walk(data, states)
+    assert [d for d, _ in states] == [d for d, _, obs in data if obs is not None]
+    assert states[-1][1].as_dict() == final.as_dict()
+    # each state is the walk stopped after that day
+    upto, _ = walk(data[:20])
+    assert dict(states)[data[19][0]].as_dict() == upto.as_dict()
+
+
+def test_the_fit_prices_each_day_with_the_state_the_live_bot_would_have():
+    data = series(80)
+    states: list = []
+    walk(data, states)
+    known = dict(states)
+    forecasts = {d: fc for d, fc, _ in data}
+    for lead in (1, 3):
+        recs = priced_as_live(data, lead)
+        assert recs and all(r["obs"] is not None for r in recs)
+        r = recs[-1]
+        cutoff = (date.fromisoformat(r["day"]) - timedelta(days=lead + 1)).isoformat()
+        mu, _, _ = combine(forecasts[r["day"]], known[cutoff])
+        assert r["mu"] == pytest.approx(mu) and r["sd"] == known[cutoff].sd
+    # a later lead is priced with an older state, so it starts later
+    assert priced_as_live(data, 3)[0]["day"] > priced_as_live(data, 1)[0]["day"]
+
+
 def test_days_without_an_observation_are_priced_but_teach_nothing():
     data = series(40)
     gap = [(d, fc, None if i % 2 else obs) for i, (d, fc, obs) in enumerate(data)]
@@ -140,6 +172,8 @@ def test_prediction_needs_the_stations_stats_and_enough_models():
     assert p is not None and p.model_version == "weighted-multimodel-v1"
     assert p.inputs["stats_lead"] == 1 and sum(p.inputs["weights"].values()) == pytest.approx(1.0, abs=1e-3)
     assert set(p.inputs["bias_c"]) == set(values)
+    # the disagreement of the raw model values, as the older models record it
+    assert p.inputs["model_spread_c"] == pytest.approx(statistics.pstdev(values.values()), abs=1e-3)
     # lead 0 (the market's own day) and leads past 3 use the nearest fitted lead
     assert model.predict(b, "high", values, 0, CAL, features()).inputs["stats_lead"] == 1
     assert model.predict(b, "high", values, 5, CAL, features()).inputs["stats_lead"] == 3
@@ -195,6 +229,14 @@ def test_refresh_stores_stats_for_every_enabled_station_and_waits_a_day(tmp_path
     loaded = stats_refresh.load(db)
     assert ("KLGA", "high", 1) not in loaded and loaded[("EGLC", "low", 3)].sd is not None
     assert loaded[("EGLC", "high", 1)].bias["ukmo_seamless"] == pytest.approx(OFFSETS["ukmo_seamless"], abs=0.3)
+    retry_h = float(cfg.model_stats.retry_hours)
+    assert stats_refresh.refresh(db, cfg, hist, FakeTruth(), "x", NOW + timedelta(hours=1))["skipped"] == "not due"
+    # after retry_hours only the failed station is fetched again
+    hist2 = FakeHistory()
+    out = stats_refresh.refresh(db, cfg, hist2, FakeTruth(), "weighted-multimodel-v1", NOW + timedelta(hours=retry_h))
+    assert out["retry"] and out["stations"] == 1 and out["rows"] == 6 and not out["failed"]
+    assert [c[0] for c in hist2.calls] == ["KLGA"] and ("KLGA", "high", 1) in stats_refresh.load(db)
+    assert stats_refresh.pending_retry(db) == {}
     assert stats_refresh.refresh(db, cfg, hist, FakeTruth(), "x", NOW + timedelta(hours=23))["skipped"] == "not due"
     # the next day's refresh adds rows; the newest ones are loaded and the old ones kept
     later = NOW + timedelta(hours=25)
@@ -203,7 +245,22 @@ def test_refresh_stores_stats_for_every_enabled_station_and_waits_a_day(tmp_path
                                              model_stats.c.lead_days == 1))
     assert len(rows) == 2 and rows[-1]["window_end"] == "2026-09-27"
     assert stats_refresh.load(db)[("EGLC", "high", 1)].last_day == "2026-09-27"
-    assert ("KLGA", "high", 1) in stats_refresh.load(db)
+
+
+def test_a_station_that_fails_again_is_retried_again_and_never_blocks_the_daily_refresh(tmp_path):
+    cfg = wcfg(tmp_path)
+    db = Database(cfg.app.database_url)
+    retry = timedelta(hours=float(cfg.model_stats.retry_hours))
+    stats_refresh.refresh(db, cfg, FakeHistory(fail=("KLGA",)), FakeTruth(), "w", NOW)
+    hist = FakeHistory(fail=("KLGA",))
+    out = stats_refresh.refresh(db, cfg, hist, FakeTruth(), "w", NOW + retry)
+    assert out["retry"] and out["rows"] == 0 and list(out["failed"]) == ["KLGA"] and len(hist.calls) == 1
+    assert stats_refresh.pending_retry(db) == {"at": (NOW + 2 * retry).isoformat(), "stations": ["KLGA"]}
+    # the daily refresh is still due on time and fetches every station
+    full = FakeHistory()
+    out = stats_refresh.refresh(db, cfg, full, FakeTruth(), "w", NOW + timedelta(hours=24))
+    assert not out["retry"] and not out["failed"] and len(full.calls) == out["stations"] > 1
+    assert stats_refresh.pending_retry(db) == {}
 
 
 def test_a_refresh_that_fetches_nothing_retries_sooner(tmp_path):
@@ -241,9 +298,31 @@ def test_engine_cycle_with_the_v2_model_in_production(tmp_path):
     assert retrain.check_rollback(eng.db, cfg, NOW) == {"skipped": retrain.WEIGHTED}
 
 
-def test_markets_of_a_station_without_stats_get_no_prediction(tmp_path):
+def test_markets_of_a_station_without_stats_get_no_prediction_but_still_their_shadows(tmp_path):
     cfg = wcfg(tmp_path)
     eng = make_engine(cfg, forecast=TwelveModelForecast(), clock=Clock(NOW))   # no history: no stats
     out = eng.run_cycle()
     assert out["model_stats"]["loaded"] == 0 and out["signals"]["no_prediction"] == 11
     assert out["signals"]["predictions"] == 0
+    assert not eng.db.rows(select(signals))          # no production prediction: no signal, no bet
+    shadows = eng.db.rows(select(predictions).where(predictions.c.role == "shadow"))
+    assert {p["model_version"] for p in shadows} >= {V1_VERSION, "raw-forecast-v1"}
+    assert all(p["inputs"].get("production_prediction_id") is None for p in shadows)
+
+
+def test_only_models_recounts_a_forecasts_quality_for_the_models_it_keeps():
+    values = {m: 15.0 for m in ALL}
+    quality = {"ok": True, "n_clean": 7, "errors": [], "rejected": {"ukmo_seamless": "stale_model_run",
+               "gfs_seamless": "out_of_range"}, "warnings": ["outlier:ecmwf_ifs", "outlier:jma_seamless"]}
+    vals, q = only_models(values, quality, set(V1), 3)
+    assert set(vals) == set(V1) and q["ok"] and q["n_clean"] == 5
+    assert q["rejected"] == {"gfs_seamless": "out_of_range"} and q["warnings"] == ["outlier:jma_seamless"]
+    failing = {**quality, "ok": False, "errors": ["too_few_valid_models:2<3"]}
+    vals, q = only_models(values, failing, {"a", "jma_seamless"}, 3)
+    assert vals == {"jma_seamless": 15.0} and not q["ok"] and q["errors"] == ["too_few_valid_models:1<3"]
+
+
+def test_every_configured_weather_model_has_a_run_time_source():
+    """So the stale-run check ([validation] max_model_run_age_hours) covers every model."""
+    from wxbot.data.weather import OPEN_METEO_DATASETS
+    assert set(load_config(env={}).weather.models) <= set(OPEN_METEO_DATASETS)

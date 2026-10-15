@@ -71,6 +71,14 @@ jobs:
         with:
           ref: ${{ steps.green.outputs.sha }}
 
+      - name: Check the code has the v2 model
+        run: |
+          # experiment 3 is defined by the v2 model; older green commits must not run it
+          if [ ! -f wxbot/model/weighted.py ]; then
+            echo "::error::the newest green commit of main predates the v2 model; refusing to run experiment 3"
+            exit 1
+          fi
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -81,7 +89,18 @@ jobs:
       - name: Restore database from the v3-paper-trade branch
         run: |
           mkdir -p "$STATE_DIR"
-          if git fetch --depth=1 origin "$STATE_BRANCH"; then
+          # Only a branch that does not exist starts a fresh experiment: if the lookup
+          # fails for any other reason the run stops, because the save step would
+          # otherwise replace the experiment with a new one.
+          rc=0
+          git ls-remote --exit-code --heads origin "$STATE_BRANCH" > /dev/null || rc=$?
+          if [ "$rc" = 2 ]; then
+            echo "no $STATE_BRANCH branch yet: starting a fresh experiment"
+          elif [ "$rc" != 0 ]; then
+            echo "::error::could not look up the $STATE_BRANCH branch (git ls-remote exit $rc); refusing to start over"
+            exit 1
+          else
+            git fetch --depth=1 origin "$STATE_BRANCH"
             git archive FETCH_HEAD | tar -x -C "$STATE_DIR"
             # a database over 90 MB gzipped is saved in parts (GitHub refuses files over 100 MB)
             if compgen -G "$STATE_DIR/wxbot.sqlite3.gz.part-*" > /dev/null; then
@@ -91,9 +110,11 @@ jobs:
             if [ -f "$STATE_DIR/wxbot.sqlite3.gz" ]; then
               gunzip -f "$STATE_DIR/wxbot.sqlite3.gz"
             fi
+            if [ ! -f "$STATE_DIR/wxbot.sqlite3" ]; then
+              echo "::error::$STATE_BRANCH holds no database; refusing to start over"
+              exit 1
+            fi
             echo "restored: $(ls -la "$STATE_DIR")"
-          else
-            echo "no $STATE_BRANCH branch yet: starting a fresh experiment"
           fi
 
       - name: Load observation history for the climatology baseline (until it succeeds)

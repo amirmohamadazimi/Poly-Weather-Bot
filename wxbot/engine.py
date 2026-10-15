@@ -50,6 +50,18 @@ def hours_to_day_end(local_date: str, tz: str, now: datetime) -> float:
     return (end - now).total_seconds() / 3600.0
 
 
+def only_models(values: dict, quality: dict, models: set[str], min_models: int) -> tuple[dict, dict]:
+    """A forecast's clean model values and its data-quality record as if only
+    `models` had been fetched: what the models built before v2 read."""
+    vals = {k: v for k, v in values.items() if k in models}
+    errors = [e for e in quality.get("errors", []) if not e.startswith("too_few_valid_models")]
+    if len(vals) < min_models:
+        errors.append(f"too_few_valid_models:{len(vals)}<{min_models}")
+    return vals, {**quality, "ok": not errors, "n_clean": len(vals), "errors": errors,
+                  "rejected": {k: v for k, v in (quality.get("rejected") or {}).items() if k in models},
+                  "warnings": [w for w in quality.get("warnings", []) if w.split(":", 1)[-1] in models]}
+
+
 def _parse_time(value) -> datetime | None:
     if not value:
         return None
@@ -372,21 +384,24 @@ class Engine:
                 features[key] = self._features(m, st, fc, values, lead_days, now, history)
             feats = features[key]
             pred = self.predictor.predict(bucket, m["kind"], values, lead_days, calib, feats)
-            if pred is None:   # the v2 model without the station's biases yet: no prediction, so no signal
-                n_none += 1
-                continue
-            pred.inputs["data_quality"] = quality
             fetched_at = fc["fetched_at"] if fc["fetched_at"].tzinfo else fc["fetched_at"].replace(tzinfo=UTC)
-            pred.inputs["forecast_fetched_at"] = fetched_at.isoformat()
-            pred.inputs["forecast_source"] = fc["source"]
-            pred.inputs["features"] = feats.values
-            cal_p = calibrator(pred.p_yes)
-            pred_id = self.db.insert(predictions, ts=now, market_id=m["id"], forecast_snapshot_id=fc["id"],
-                                     model_version=pred.model_version, lead_days=lead_days, mu_c=pred.mu_c,
-                                     sigma_c=pred.sigma_c, p_yes=pred.p_yes, inputs=pred.inputs,
-                                     role="production", feature_set=FEATURE_SET, calibrated_prob=cal_p,
-                                     calibrator_version=calibrator.version, params_version=params.version)
-            n_pred += 1
+            pred_id = cal_p = None
+            if pred is None:
+                # the v2 model without the station's biases yet: no production prediction and no
+                # production signal; the shadow and same-day models below still price the market
+                n_none += 1
+            else:
+                pred.inputs["data_quality"] = quality
+                pred.inputs["forecast_fetched_at"] = fetched_at.isoformat()
+                pred.inputs["forecast_source"] = fc["source"]
+                pred.inputs["features"] = feats.values
+                cal_p = calibrator(pred.p_yes)
+                pred_id = self.db.insert(predictions, ts=now, market_id=m["id"], forecast_snapshot_id=fc["id"],
+                                         model_version=pred.model_version, lead_days=lead_days, mu_c=pred.mu_c,
+                                         sigma_c=pred.sigma_c, p_yes=pred.p_yes, inputs=pred.inputs,
+                                         role="production", feature_set=FEATURE_SET, calibrated_prob=cal_p,
+                                         calibrator_version=calibrator.version, params_version=params.version)
+                n_pred += 1
             n_shadow += self._shadow_predictions(m, fc, bucket, values, lead_days, calib, feats, pred_id, now,
                                                  shadow_errors)
             same = None
@@ -396,12 +411,13 @@ class Engine:
                 n_shadow += same is not None
             forecast_age = (now - fetched_at).total_seconds() / 60.0
             window = None if nc is None else (float(nc.min_hours_left), float(nc.max_hours_left))
+            placed = False
             if (same is not None and nc_anchor is not None and window is not None
                     and window[0] <= hours_to_day_end(m["local_date"], st.tz, now) <= window[1]):
                 # in its window the same-day model makes the market's signal, through its own anchor
                 placed = self._signal(m, st, same[0], same[1], forecast_age, now, same[0].p_yes, "identity",
                                       nc_anchor, window)
-            else:
+            elif pred is not None and pred_id is not None and cal_p is not None:
                 placed = self._signal(m, st, pred, pred_id, forecast_age, now, cal_p, calibrator.version, anchor)
             n_bets += placed
         for version, err in shadow_errors.items():
@@ -453,6 +469,8 @@ class Engine:
             return None
         if sp is None:
             return None
+        if self.nowcast.models is not None:   # its rules count the models it reads, as before the v2 model
+            values, quality = only_models(values, quality, self.nowcast.models, int(self.validation.min_models))
         sp.inputs.update(production_prediction_id=pred_id, model_values_c=values, data_quality=quality)
         sid = self.db.insert(predictions, ts=now, market_id=m["id"], forecast_snapshot_id=fc["id"],
                              model_version=sp.model_version, lead_days=0, mu_c=sp.mu_c, sigma_c=sp.sigma_c,

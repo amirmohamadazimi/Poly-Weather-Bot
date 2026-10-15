@@ -8,8 +8,11 @@ Inputs (research/fetch_models.py, research/fetch_intraday.py): the daily max and
 min of every model's previous_dayN forecast per station (daily_prev_*.csv.gz)
 and the stations' METAR reports (metar.csv.gz, metar_extra.csv.gz). For every
 station, kind and lead the model is walked through the days in order
-(wxbot/model/weighted.py walk: each day priced with what was known before it),
-and a0..a2 of log sigma = a0 + a1 log(sd) + a2 log(spread + 0.1) are the
+(wxbot/model/weighted.py walk), and each day D is priced as the bot prices a
+market at that lead: with the state after day D - lead - 1, the last whole day
+before the decision day D - lead (wxbot/learning/model_stats.py refits up to
+the station's local yesterday), and only with at least MIN_MODELS models.
+a0..a2 of log sigma = a0 + a1 log(sd) + a2 log(spread + 0.1) are the
 maximum-likelihood fit of a normal error on the days first..last, per kind and
 lead. Days before `first` only warm up the running biases. The output depends
 only on the inputs and the window.
@@ -17,25 +20,27 @@ only on the inputs and the window.
 from __future__ import annotations
 
 import argparse
+import bisect
 import csv
 import gzip
 import json
 import math
 import sys
 from collections import defaultdict
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from wxbot.model.normal import bucket_probability
 from wxbot.data.polymarket import Bucket
-from wxbot.model.weighted import BIAS_HALF_LIFE, SD_HALF_LIFE, walk
+from wxbot.model.weighted import BIAS_HALF_LIFE, SD_HALF_LIFE, Stats, combine, walk
 
 MODELS = ["ecmwf_ifs025", "gfs_seamless", "icon_seamless", "gem_seamless", "jma_seamless", "ecmwf_ifs",
           "ecmwf_aifs025_single", "ukmo_seamless", "meteofrance_seamless", "cma_grapes_global",
           "ncep_nbm_conus", "ncep_hrrr_conus"]
 LEADS = (1, 2, 3)
 MIN_REPORTS = 18
+MIN_MODELS = 3     # [weather] min_models: the bot prices nothing with fewer models that have stats
 # Market stations not in the bot's table (research/fetch_models.py EXTRA): more days for the fit.
 EXTRA_TZ = {
     "OEJN": "Asia/Riyadh", "LTFM": "Europe/Istanbul", "LLBG": "Asia/Jerusalem", "LFPB": "Europe/Paris",
@@ -95,6 +100,28 @@ def load_forecasts(data: Path) -> dict[tuple[str, str, int], dict[str, dict[str,
 def series(fc: dict[str, dict[str, float]], obs: dict[str, float]) -> list[tuple[str, dict[str, float], float | None]]:
     return [(d, {m: v for m, v in sorted(fc[d].items(), key=lambda kv: MODELS.index(kv[0]))}, obs.get(d))
             for d in sorted(fc)]
+
+
+def priced_as_live(days: list[tuple[str, dict[str, float], float | None]], lead: int) -> list[dict]:
+    """{day, mu, spread, sd, obs} for each observed day D, priced with the state
+    after day D - lead - 1 (see the module docstring)."""
+    states: list[tuple[str, Stats]] = []
+    walk(days, states)
+    known = [d for d, _ in states]
+    out = []
+    for day, values, obs in days:
+        if obs is None:
+            continue
+        cutoff = (date.fromisoformat(day) - timedelta(days=lead + 1)).isoformat()
+        i = bisect.bisect_right(known, cutoff) - 1
+        if i < 0 or states[i][1].sd is None:
+            continue
+        st = states[i][1]
+        c = combine(values, st)
+        if c is None or len(c[2]) < MIN_MODELS:
+            continue
+        out.append({"day": day, "mu": c[0], "spread": c[1], "sd": st.sd, "obs": obs})
+    return out
 
 
 def fit_sigma(rows: list[dict]) -> list[float]:
@@ -160,10 +187,7 @@ def main() -> None:
     rows: dict[tuple[str, int], list[dict]] = defaultdict(list)
     evals: dict[tuple[str, int], list[dict]] = defaultdict(list)
     for (st, kind, lead), fc in sorted(forecasts.items()):
-        _, recs = walk(series(fc, observed.get((st, kind), {})))
-        for r in recs:
-            if r["obs"] is None or r["sd"] is None:
-                continue
+        for r in priced_as_live(series(fc, observed.get((st, kind), {})), lead):
             r["station"] = st
             if a.first.isoformat() <= r["day"] <= a.last.isoformat():
                 rows[(kind, lead)].append(r)

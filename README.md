@@ -234,10 +234,11 @@ METAR observations, and stores them in `model_stats` (every refit is kept;
 each prediction records the day its stats run to). A market whose station has
 no stats yet gets no prediction and no bet.
 
-Backtested day by day on Jun 1 to Sep 26 2026 (each day priced with what was
-known the day before), the day-ahead high's mean absolute error fell from
-0.84 °C (five-model mean with the same rolling bias) and 1.13 °C (raw
-five-model mean) to 0.79 °C. Against the market it is still the weaker
+Backtested day by day on Jun 1 to Sep 26 2026 (each day priced as the bot
+would have priced it, with stats up to the day before the decision), the
+day-ahead high's mean absolute error fell from 0.89 °C (normal-multimodel-v1),
+0.86 °C (five-model mean with the same rolling bias) and 1.18 °C (raw
+five-model mean) to 0.81 °C. Against the market it is still the weaker
 forecast: on 16,099 resolved markets with tight books, its log loss was higher
 than the mid price's at every lead, and the US National Weather Service's own
 guidance (NBM and GFS MOS) did worse still. Like every production model it can

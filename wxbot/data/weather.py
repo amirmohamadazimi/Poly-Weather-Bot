@@ -34,6 +34,10 @@ OPEN_METEO_META = "https://api.open-meteo.com/data/{dataset}/static/meta.json"
 OPEN_METEO_DATASETS = {
     "ecmwf_ifs025": "ecmwf_ifs025", "gfs_seamless": "ncep_gfs013", "icon_seamless": "dwd_icon",
     "gem_seamless": "cmc_gem_gdps", "jma_seamless": "jma_gsm",
+    # the models added for weighted-multimodel-v1
+    "ecmwf_ifs": "ecmwf_ifs", "ecmwf_aifs025_single": "ecmwf_aifs025_single",
+    "ukmo_seamless": "ukmo_global_deterministic_10km", "meteofrance_seamless": "meteofrance_arpege_world025",
+    "cma_grapes_global": "cma_grapes_global", "ncep_nbm_conus": "ncep_nbm_conus", "ncep_hrrr_conus": "ncep_hrrr_conus",
 }
 
 MIN_HOURS_PER_DAY = 20  # a model's day needs this many hourly values to count
