@@ -1,0 +1,31 @@
+# Research only: pulls US MOS guidance (research/fetch_mos.py) and commits it to
+# this branch. Runs on pushes to the research-intraday branch that change that
+# script; never on main.
+name: research-mos
+
+on:
+  push:
+    branches: [research-intraday]
+    paths: ["research/fetch_mos.py", ".github/workflows/research-mos.yml"]
+
+permissions:
+  contents: write
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - run: python -m research.fetch_mos 2025-10-01 2026-10-15
+      - run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
+          git add research/data/mos_fixed.csv.gz
+          git commit -m "research: US MOS guidance (NBE, MEX) parsed per reply, 2025-10-01 to 2026-10-15" || exit 0
+          git pull --rebase origin research-intraday
+          git push origin HEAD:research-intraday
