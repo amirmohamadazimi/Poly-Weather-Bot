@@ -112,19 +112,28 @@ def test_walk_can_keep_the_state_after_every_observed_day():
 
 def test_the_fit_prices_each_day_with_the_state_the_live_bot_would_have():
     data = series(80)
-    states: list = []
-    walk(data, states)
-    known = dict(states)
-    forecasts = {d: fc for d, fc, _ in data}
+    # six days without an observation, and the last ten days with only two models
+    data = [(d, fc, None if 50 <= k < 56 else obs) for k, (d, fc, obs) in enumerate(data)]
+    data = [(d, {m: fc[m] for m in V1[:2]} if k >= 70 else fc, obs) for k, (d, fc, obs) in enumerate(data)]
     for lead in (1, 3):
-        recs = priced_as_live(data, lead)
-        assert recs and all(r["obs"] is not None for r in recs)
-        r = recs[-1]
-        cutoff = (date.fromisoformat(r["day"]) - timedelta(days=lead + 1)).isoformat()
-        mu, _, _ = combine(forecasts[r["day"]], known[cutoff])
-        assert r["mu"] == pytest.approx(mu) and r["sd"] == known[cutoff].sd
+        recs = {r["day"]: r for r in priced_as_live(data, lead)}
+        expected = set()
+        for d, fc, obs in data:
+            if obs is None:
+                continue
+            cutoff = (date.fromisoformat(d) - timedelta(days=lead + 1)).isoformat()
+            state, _ = walk([x for x in data if x[0] <= cutoff])     # what the live refit would hold
+            c = None if state.sd is None else combine(fc, state)
+            if c is None or len(c[2]) < 3:
+                continue
+            expected.add(d)
+            assert recs[d]["mu"] == pytest.approx(c[0]) and recs[d]["sd"] == state.sd, (lead, d)
+        assert set(recs) == expected and expected
+        assert not any(d >= data[70][0] for d in recs)              # fewer than three models: not priced
+        # a day whose cutoff falls in the gap is priced (above) with the state from before the gap
+        assert data[55][2] is None and data[56 + lead][0] in recs
     # a later lead is priced with an older state, so it starts later
-    assert priced_as_live(data, 3)[0]["day"] > priced_as_live(data, 1)[0]["day"]
+    assert min(r["day"] for r in priced_as_live(data, 3)) > min(r["day"] for r in priced_as_live(data, 1))
 
 
 def test_days_without_an_observation_are_priced_but_teach_nothing():

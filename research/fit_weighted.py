@@ -2,7 +2,7 @@
 
     git fetch origin research-intraday
     git checkout origin/research-intraday -- research/data    # the inputs (~30 MB), kept off main
-    python -m research.fit_weighted research/data 2025-12-01 2026-09-26 > wxbot/model/weighted_params.json
+    python -m research.fit_weighted research/data 2025-12-01 2026-10-12 > wxbot/model/weighted_params.json
 
 Inputs (research/fetch_models.py, research/fetch_intraday.py): the daily max and
 min of every model's previous_dayN forecast per station (daily_prev_*.csv.gz)
@@ -15,7 +15,10 @@ the station's local yesterday), and only with at least MIN_MODELS models.
 a0..a2 of log sigma = a0 + a1 log(sd) + a2 log(spread + 0.1) are the
 maximum-likelihood fit of a normal error on the days first..last, per kind and
 lead. Days before `first` only warm up the running biases. The output depends
-only on the inputs and the window.
+only on the inputs and the window. --evaluate scores a window: its mean
+absolute error is out of sample (each day uses only earlier days), but its log
+loss uses the fitted spread parameters, so it is in sample for days inside the
+fit window.
 """
 from __future__ import annotations
 
