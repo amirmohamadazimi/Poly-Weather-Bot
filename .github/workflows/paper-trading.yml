@@ -38,6 +38,10 @@ jobs:
         shell: bash               # -eo pipefail: a failed cycle fails the run
     env:
       WXBOT_APP__MODE: paper
+      # No new bets since 2026-10-15 (amir): no probability reaches 1.01, so the
+      # confidence rule refuses every bet. Cycles still run so open bets settle
+      # and REPORT.md stays current.
+      WXBOT_STRATEGY__MIN_MODEL_PROB: "1.01"
       STATE_BRANCH: paper-data
       STATE_DIR: ${{ github.workspace }}/state
       WXBOT_APP__DATABASE_URL: sqlite:///${{ github.workspace }}/state/wxbot.sqlite3

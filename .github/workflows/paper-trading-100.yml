@@ -1,4 +1,5 @@
-# Experiment 2 ($100, 30 days): one cycle every 3 hours.
+# Experiment 2 ($100, 30 days): one cycle every 3 hours. No new bets since
+# 2026-10-15; see the env below.
 #
 # Runs the newest commit of main on which CI (tests.yml: lint, types, tests,
 # build) passed, so merged improvements reach it but untested code never does:
@@ -43,6 +44,13 @@ jobs:
       WXBOT_BANKROLL__INITIAL: "100"
       WXBOT_EXPERIMENT__NAME: exp2-100usd
       WXBOT_EXPERIMENT__DAYS: "30"   # then no new bets; open ones settle (recorded once, so it cannot move)
+      # No new bets since 2026-10-15 (amir; experiment 3 takes over): no
+      # probability reaches 1.01, so the confidence rule refuses every bet.
+      # Cycles still run so open bets settle and REPORT.md stays current, on
+      # the model this experiment ran, whatever main's production model is.
+      WXBOT_STRATEGY__MIN_MODEL_PROB: "1.01"
+      WXBOT_MODEL__VERSION: normal-multimodel-v1
+      WXBOT_WEATHER__MODELS: ecmwf_ifs025,gfs_seamless,icon_seamless,gem_seamless,jma_seamless
       STATE_BRANCH: paper-data-100
       STATE_DIR: ${{ github.workspace }}/state
       WXBOT_APP__DATABASE_URL: sqlite:///${{ github.workspace }}/state/wxbot.sqlite3
