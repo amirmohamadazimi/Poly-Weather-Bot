@@ -10,14 +10,11 @@ import requests
 
 META = "https://api.open-meteo.com/data/{}/static/meta.json"
 DATASETS = [
-    "ecmwf_ifs025", "ecmwf_ifs", "ecmwf_ifs04", "ecmwf_aifs025_single", "ecmwf_aifs025", "ncep_gfs013", "ncep_gfs025",
-    "dwd_icon", "cmc_gem_gdps", "jma_gsm", "ukmo_global_deterministic_10km", "ukmo_uk_deterministic_2km",
-    "meteofrance_arpege_world025", "meteofrance_arpege_europe", "meteofrance_arome_france0025", "cma_grapes_global",
-    "ncep_nbm_conus", "ncep_hrrr_conus", "ncep_hrrr_conus_15min",
+    "cmc_gem_gdps", "cmc_gem_gdps_15km", "cmc_gem_gdps_25km", "cmc_gem_gdps15", "cmc_gem_global", "cmc_gdps",
+    "cmc_gem_rdps", "cmc_gem_hrdps", "cmc_gem_hrdps_continental", "cmc_gem_hrdps_west", "cmc_gem_geps",
+    "cmc_gem_geps025", "gem_global", "gem_seamless", "ncep_gfs013", "jma_gsm", "dwd_icon",
 ]
-MODELS = ["ecmwf_ifs025", "gfs_seamless", "icon_seamless", "gem_seamless", "jma_seamless", "ecmwf_ifs",
-          "ecmwf_aifs025_single", "ukmo_seamless", "meteofrance_seamless", "cma_grapes_global", "ncep_nbm_conus",
-          "ncep_hrrr_conus"]
+MODELS = ["gem_seamless", "gem_global", "gem_regional", "gem_hrdps_continental"]
 
 
 def main() -> None:
@@ -28,12 +25,12 @@ def main() -> None:
             j = r.json() if r.ok else None
             ts = j.get("last_run_initialisation_time") if j else None
             out["meta"][ds] = {"status": r.status_code, "last_run": ts and datetime.fromtimestamp(int(ts), UTC).isoformat(),
-                               "keys": sorted(j)[:12] if j else None}
+                               "meta": {k: v for k, v in (j or {}).items() if k != "crs_wkt"}}
         except Exception as exc:  # noqa: BLE001
             out["meta"][ds] = {"error": str(exc)}
         print("meta", ds, json.dumps(out["meta"][ds]), flush=True)
         time.sleep(0.5)
-    for lat, lon, name in ((40.7769, -73.874, "KLGA"), (51.5048, 0.0495, "EGLC")):
+    for lat, lon, name in ((40.7769, -73.874, "KLGA"),):
         for m in MODELS:
             try:
                 r = requests.get("https://api.open-meteo.com/v1/forecast", timeout=60, params={
