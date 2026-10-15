@@ -52,9 +52,14 @@ max_price_histories_per_cycle = 300
 max_result_checks_per_cycle = 500
 
 [weather]
-# Open-Meteo deterministic models averaged into the forecast. The same list is
-# used by the backtest so the calibration matches what trades.
-models = ["ecmwf_ifs025", "gfs_seamless", "icon_seamless", "gem_seamless", "jma_seamless"]
+# Open-Meteo deterministic models fetched for every forecast. The v2 model
+# ([model] version) weighs all of them; the older models, the station bias and
+# spread sets and the backtests use [model] v1_models only. NBM and HRRR cover
+# the US only. To go back to normal-multimodel-v1 in production, set [model]
+# version to it and this list to the five v1_models.
+models = ["ecmwf_ifs025", "gfs_seamless", "icon_seamless", "gem_seamless", "jma_seamless", "ecmwf_ifs",
+          "ecmwf_aifs025_single", "ukmo_seamless", "meteofrance_seamless", "cma_grapes_global", "ncep_nbm_conus",
+          "ncep_hrrr_conus"]
 min_models = 3              # data-quality: fewer models than this -> no trade
 max_forecast_age_minutes = 180
 
@@ -67,7 +72,15 @@ outlier_c = 8.0                # >8 C from the other models' median: warning
 min_obs_reports = 18           # METAR reports needed for a daily high/low
 
 [model]
-version = "normal-multimodel-v1"
+# weighted-multimodel-v1 (wxbot/model/weighted.py): every weather model above,
+# each corrected by its own recent bias at the station and weighted by its
+# recent accuracy there, with a spread from the combined forecast's recent
+# error and today's disagreement between the models. The biases and errors are
+# refitted daily ([model_stats]). normal-multimodel-v1 (wxbot/model/normal.py)
+# is the earlier model: the plain mean of the five v1_models, corrected by the
+# station bias/spread set ([learning]).
+version = "weighted-multimodel-v1"
+v1_models = ["ecmwf_ifs025", "gfs_seamless", "icon_seamless", "gem_seamless", "jma_seamless"]
 # Forecast error standard deviation in degC by lead day, used until the
 # backtest has fitted per-station values (see `python main.py backtest`).
 default_sigma_c = [1.4, 1.7, 2.1, 2.5, 3.0]
@@ -77,8 +90,9 @@ prob_ceiling = 0.99
 min_calibration_samples = 20
 # Baselines priced on every market next to the production model above. Their
 # predictions are stored and scored (REPORT.md "Model comparison") but never
-# traded. Known: "raw-forecast-v1", "climatology-v1".
-shadow_models = ["raw-forecast-v1", "climatology-v1"]
+# traded. Known: "normal-multimodel-v1", "raw-forecast-v1", "climatology-v1"
+# (one equal to version is skipped).
+shadow_models = ["normal-multimodel-v1", "raw-forecast-v1", "climatology-v1"]
 # climatology-v1: observed highs/lows within this many days of the same date in
 # past years (load them with `python main.py climatology`); no prediction with
 # fewer samples than climatology_min_samples.
@@ -137,8 +151,19 @@ min_models = 2                 # forecast hours need this many models
 prob_floor = 0.001
 prob_ceiling = 0.999
 
+[model_stats]
+# The v2 model's per-station biases and errors (wxbot/learning/model_stats.py):
+# refitted every refresh_hours from the last `days` days of past forecasts
+# (Open-Meteo Previous Runs) and observed highs and lows; retry_hours after a
+# refresh that fetched nothing. pause_seconds between stations keeps the
+# requests under Open-Meteo's per-minute limit.
+days = 120
+refresh_hours = 24
+retry_hours = 3
+pause_seconds = 3
+
 [learning]
-# Retraining of the production model's station bias and error spread
+# Retraining of normal-multimodel-v1's station bias and error spread
 # (wxbot/learning/, README "How the learning system works"). Every retrain_days
 # candidates are fitted on each train_days window of past forecasts and
 # observations and judged on the markets of the newest holdout_days days, which
@@ -147,7 +172,8 @@ prob_ceiling = 0.999
 # lower and the gain holds in min_confidence of bootstrap resamples of whole
 # stations. The replaced set is kept, and put back automatically if the new one
 # then does reliably worse on the markets it priced. false turns all of this off
-# (the learning ledger is still written).
+# (the learning ledger is still written), and so does the v2 model in
+# production, which refits its own biases ([model_stats]).
 enabled = true
 retrain_days = 7
 holdout_days = 7

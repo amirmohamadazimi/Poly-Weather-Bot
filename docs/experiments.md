@@ -7,6 +7,8 @@
 * The code is pinned to the `exp1-frozen` branch (main at ee70e2d), so changes
   to `main` do not alter its model or rules mid-run. Do not push to that branch.
 * State: `wxbot.sqlite3` and `REPORT.md` on the `paper-data` branch.
+* No new bets since 2026-10-15 (experiment 3 took over); its runs go on so
+  its open bets settle.
 
 ## Experiment 2: $100, 30 days
 
@@ -69,6 +71,27 @@
   parameters from it.
 * State: `wxbot.sqlite3.gz`, `REPORT.md` and `RESEARCH.md` on the
   `paper-data-100` branch.
+* No new bets since 2026-10-15 (experiment 3 took over); its runs go on so
+  its open bets settle, pinned to `normal-multimodel-v1`.
+
+## Experiment 3: $100, 30 days, from 2026-10-15
+
+* Runs on GitHub Actions (`.github/workflows/paper-trading-v3.yml`) every 3
+  hours, offset from the others, from the newest commit of `main` that passed
+  CI, like experiment 2. It starts when that workflow reaches `main`.
+* Model: `weighted-multimodel-v1` (README "Production model"), betting only
+  through the market anchor, which starts with no fit for this model and so
+  places no bet until it has 300 resolved tight-book markets to judge it on.
+  `normal-multimodel-v1`, `raw-forecast-v1`, `climatology-v1` and the
+  same-day model are scored next to it as shadows.
+* The workflow pins the starting bankroll ($100), the name `exp3-v3-100usd`
+  and the length (30 days).
+* State: `wxbot.sqlite3.gz`, `REPORT.md` and `RESEARCH.md` on the
+  `v3-paper-trade` branch.
+* When it started, experiments 1 and 2 stopped opening bets (their workflows
+  set `WXBOT_STRATEGY__MIN_MODEL_PROB=1.01`, which no probability reaches);
+  their cycles go on so their open bets settle. Experiment 2 is pinned to
+  `normal-multimodel-v1` and its five weather models.
 
 ## Reproducing an experiment
 

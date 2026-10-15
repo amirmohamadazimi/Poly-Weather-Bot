@@ -97,8 +97,9 @@ def main(argv: list[str] | None = None) -> int:
             print("calibration already present; skipping backtest")
             return 0
         from wxbot.data.weather import IEMObservations, OpenMeteoPreviousRuns
+        from wxbot.model.registry import v1_models
         stations = [s.strip().upper() for s in args.stations.split(",")] if args.stations else None
-        rep = run_backtest(cfg, db, OpenMeteoPreviousRuns(list(cfg.weather.models)), IEMObservations(),
+        rep = run_backtest(cfg, db, OpenMeteoPreviousRuns(v1_models(cfg)), IEMObservations(),
                            stations=stations, days=args.days or 90)
         print(json.dumps({k: v for k, v in rep.items() if k != "stations"}, indent=2, default=str))
         return 0
@@ -174,7 +175,8 @@ def backtest_markets(cfg, db: Database, args) -> int:
     if not args.offline:
         from wxbot.data.polymarket import PolymarketClient
         from wxbot.data.weather import IEMObservations, OpenMeteoPreviousRuns
-        sources = (PolymarketClient(tag_slug=cfg.markets.tag_slug), OpenMeteoPreviousRuns(list(cfg.weather.models)),
+        from wxbot.model.registry import v1_models
+        sources = (PolymarketClient(tag_slug=cfg.markets.tag_slug), OpenMeteoPreviousRuns(v1_models(cfg)),
                    IEMObservations())
     rep = run_market_backtest(cfg, db, start, end, sources=sources, stations=stations)
     print(to_markdown(rep))

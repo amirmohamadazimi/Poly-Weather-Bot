@@ -30,10 +30,17 @@ IEM_ASOS = "https://mesonet.agron.iastate.edu/cgi-bin/request/asos.py"
 # (field last_run_initialisation_time, unix seconds). Forecast-API model name -> dataset.
 # The "seamless" models blend regional and global runs; the global dataset's run
 # time is used for them, so treat it as the latest run available at fetch time.
+# A dataset whose data ends before now has been retired (cmc_gem_gdps stopped on
+# 2026-05-26 when GEM moved to cmc_gem_gdps_15km): its run time cannot describe
+# the values served, so it counts as unknown rather than stale.
 OPEN_METEO_META = "https://api.open-meteo.com/data/{dataset}/static/meta.json"
 OPEN_METEO_DATASETS = {
     "ecmwf_ifs025": "ecmwf_ifs025", "gfs_seamless": "ncep_gfs013", "icon_seamless": "dwd_icon",
-    "gem_seamless": "cmc_gem_gdps", "jma_seamless": "jma_gsm",
+    "gem_seamless": "cmc_gem_gdps_15km", "jma_seamless": "jma_gsm",
+    # the models added for weighted-multimodel-v1
+    "ecmwf_ifs": "ecmwf_ifs", "ecmwf_aifs025_single": "ecmwf_aifs025_single",
+    "ukmo_seamless": "ukmo_global_deterministic_10km", "meteofrance_seamless": "meteofrance_arpege_world025",
+    "cma_grapes_global": "cma_grapes_global", "ncep_nbm_conus": "ncep_nbm_conus", "ncep_hrrr_conus": "ncep_hrrr_conus",
 }
 
 MIN_HOURS_PER_DAY = 20  # a model's day needs this many hourly values to count
@@ -120,9 +127,13 @@ class OpenMeteoForecast:
             dataset = OPEN_METEO_DATASETS.get(m)
             if dataset:
                 try:
-                    ts = get_json(self.session, OPEN_METEO_META.format(dataset=dataset)).get(
-                        "last_run_initialisation_time")
-                    run = datetime.fromtimestamp(int(ts), UTC).isoformat() if ts else None
+                    meta = get_json(self.session, OPEN_METEO_META.format(dataset=dataset))
+                    ts, data_end = meta.get("last_run_initialisation_time"), meta.get("data_end_time")
+                    if data_end and int(data_end) < time.time():
+                        log.warning("run time for %s unknown: dataset %s ended %s", m, dataset,
+                                    datetime.fromtimestamp(int(data_end), UTC).isoformat())
+                    elif ts:
+                        run = datetime.fromtimestamp(int(ts), UTC).isoformat()
                 except Exception as exc:  # noqa: BLE001 - metadata is optional
                     log.warning("run time for %s unavailable: %s", m, exc)
             self._runs[m] = (time.monotonic(), run)

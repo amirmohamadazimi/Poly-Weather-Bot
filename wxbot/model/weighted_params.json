@@ -1,0 +1,66 @@
+{
+ "version": "weighted-multimodel-v1",
+ "train_from": "2025-12-01",
+ "train_to": "2026-10-12",
+ "rows": {
+  "high_1": 16610,
+  "high_2": 16609,
+  "high_3": 16608,
+  "low_1": 16610,
+  "low_2": 16609,
+  "low_3": 16608
+ },
+ "models": [
+  "ecmwf_ifs025",
+  "gfs_seamless",
+  "icon_seamless",
+  "gem_seamless",
+  "jma_seamless",
+  "ecmwf_ifs",
+  "ecmwf_aifs025_single",
+  "ukmo_seamless",
+  "meteofrance_seamless",
+  "cma_grapes_global",
+  "ncep_nbm_conus",
+  "ncep_hrrr_conus"
+ ],
+ "bias_half_life_days": 10.0,
+ "sd_half_life_days": 30.0,
+ "inputs": "Open-Meteo Previous Runs temperature_2m_previous_dayN daily max/min per model; METAR daily max/min (days with >= 18 reports)",
+ "sigma": {
+  "high": [
+   [
+    0.045223,
+    0.385593,
+    0.551262
+   ],
+   [
+    0.07594,
+    0.345948,
+    0.597466
+   ],
+   [
+    0.106605,
+    0.320494,
+    0.582399
+   ]
+  ],
+  "low": [
+   [
+    0.064718,
+    0.685227,
+    0.291173
+   ],
+   [
+    0.074941,
+    0.665624,
+    0.289535
+   ],
+   [
+    0.089966,
+    0.636053,
+    0.317999
+   ]
+  ]
+ }
+}

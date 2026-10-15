@@ -287,7 +287,8 @@ def test_retraining_with_no_data_at_all_retries_the_next_day(cfg):
 
 def test_learning_can_be_turned_off(cfg, monkeypatch):
     from wxbot.config import load_config
-    off = load_config(env={"WXBOT_APP__DATABASE_URL": cfg.app.database_url, "WXBOT_LEARNING__ENABLED": "false"})
+    off = load_config(env={"WXBOT_MODEL__VERSION": "normal-multimodel-v1",
+                           "WXBOT_APP__DATABASE_URL": cfg.app.database_url, "WXBOT_LEARNING__ENABLED": "false"})
     db = Database(off.app.database_url)
     old = make_set(db, off, 0.0, 1.0, NOW - timedelta(days=30))
     priced_markets(db, off, old)

@@ -25,7 +25,8 @@ JUMP_HOUR = 10   # prices jump to the result at 10:00 UTC on the market day, aft
 
 
 def bt_cfg(tmp_path, **extra):
-    env = {"WXBOT_APP__DATABASE_URL": f"sqlite:///{tmp_path / 'app.sqlite3'}",
+    env = {"WXBOT_MODEL__VERSION": "normal-multimodel-v1",
+           "WXBOT_APP__DATABASE_URL": f"sqlite:///{tmp_path / 'app.sqlite3'}",
            "WXBOT_BACKTEST__DATABASE_URL": f"sqlite:///{tmp_path / 'bt.sqlite3'}",
            "WXBOT_BACKTEST__TRAIN_DAYS": "30", "WXBOT_BACKTEST__CLIMATOLOGY_YEARS": "2",
            "WXBOT_BACKTEST__BOOTSTRAP": "200", **extra}
@@ -271,7 +272,8 @@ def test_later_observations_never_reach_a_decision(tmp_path):
 
 
 def test_bias_fit_is_walk_forward():
-    cfg = load_config(env={"WXBOT_BACKTEST__TRAIN_DAYS": "30"})
+    cfg = load_config(env={"WXBOT_MODEL__VERSION": "normal-multimodel-v1",
+                           "WXBOT_BACKTEST__TRAIN_DAYS": "30"})
     start = date(2026, 7, 1)
     days = [(start + timedelta(days=k)).isoformat() for k in range(80)]
     forecasts = {("EGLC", "high", 2): {d: {"a": float(k), "b": float(k), "c": float(k)} for k, d in enumerate(days)}}
@@ -285,7 +287,8 @@ def test_bias_fit_is_walk_forward():
 
 
 def test_walk_forward_calibration_uses_only_known_results(monkeypatch):
-    cfg = load_config(env={"WXBOT_CALIBRATION__MIN_SAMPLES": "40"})
+    cfg = load_config(env={"WXBOT_MODEL__VERSION": "normal-multimodel-v1",
+                           "WXBOT_CALIBRATION__MIN_SAMPLES": "40"})
     t0 = datetime(2026, 9, 1, 6, tzinfo=UTC)
     rows = []
     for k in range(400):  # an overconfident model: says 90%, right 60% of the time

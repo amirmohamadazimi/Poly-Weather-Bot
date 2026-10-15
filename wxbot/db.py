@@ -377,6 +377,22 @@ param_sets = Table(  # every fit of the station bias/spread parameters; one is p
     Column("legacy", Boolean, nullable=False, default=False),  # predictions without params_version belong to it
 )
 
+model_stats = Table(  # the v2 model's per-model biases and errors, refitted daily (wxbot/learning/model_stats.py)
+    "model_stats", metadata,
+    Column("id", Integer, primary_key=True),
+    _ts("fitted_at"),
+    Column("model_version", String(40)),
+    Column("station", String(10), nullable=False, index=True),
+    Column("kind", String(4), nullable=False),
+    Column("lead_days", Integer, nullable=False),
+    Column("window_start", String(10)),               # local days of forecasts and observations walked through
+    Column("window_end", String(10)),
+    Column("n_days", Integer),                        # observed days
+    Column("last_day", String(10)),                   # the newest observed day
+    Column("sd_c", Float),                            # EW root mean square error of the combined forecast
+    Column("stats", JSON),                            # weighted.Stats: bias and error per weather model
+)
+
 prediction_outcomes = Table(  # the learning ledger: every resolved market's decision prediction (v2 M9)
     "prediction_outcomes", metadata,
     Column("id", Integer, primary_key=True),
@@ -482,7 +498,7 @@ EXPORT_TABLES = [
     "market_snapshots", "market_price_history", "market_criteria_history", "market_resolutions", "bankroll_snapshots",
     "weather_observations", "calibration_params", "backtest_runs", "model_versions", "prob_calibrators",
     "experiments", "system_events", "historical_forecasts", "backtest_predictions", "param_sets",
-    "prediction_outcomes", "market_anchors", "station_reports",
+    "prediction_outcomes", "market_anchors", "station_reports", "model_stats",
 ]
 
 
