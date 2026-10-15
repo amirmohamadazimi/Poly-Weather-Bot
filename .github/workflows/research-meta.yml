@@ -1,0 +1,25 @@
+# Research only: probes Open-Meteo dataset metadata (research/probe_meta.py) and
+# prints it in the run log. Runs on pushes to the research-intraday branch that
+# change that script; never on main. Commits nothing.
+name: research-meta
+
+on:
+  push:
+    branches: [research-intraday]
+    paths: ["research/probe_meta.py", ".github/workflows/research-meta.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install requests
+      - run: python -m research.probe_meta | tee meta.json
+      - run: cat meta.json >> "$GITHUB_STEP_SUMMARY"
