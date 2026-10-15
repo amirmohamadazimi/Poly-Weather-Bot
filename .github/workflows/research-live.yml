@@ -1,0 +1,30 @@
+# Research only: runs research/probe_live.py with the bot code of the branch
+# under test and prints the results in the run log. Runs on pushes to the
+# research-intraday branch that change the probe; never on main. Commits nothing.
+name: research-live
+
+on:
+  push:
+    branches: [research-intraday]
+    paths: ["research/probe_live.py", ".github/workflows/research-live.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          ref: v2-weighted-model
+          path: bot
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r bot/requirements.txt
+      - run: python -u research/probe_live.py
+        env:
+          PYTHONPATH: ${{ github.workspace }}/bot
