@@ -10,6 +10,7 @@ the cycle still runs.
 from __future__ import annotations
 
 import logging
+import statistics
 import time
 from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
@@ -50,16 +51,22 @@ def hours_to_day_end(local_date: str, tz: str, now: datetime) -> float:
     return (end - now).total_seconds() / 3600.0
 
 
-def only_models(values: dict, quality: dict, models: set[str], min_models: int) -> tuple[dict, dict]:
+def only_models(values: dict, quality: dict, models: set[str], min_models: int,
+                outlier_c: float) -> tuple[dict, dict]:
     """A forecast's clean model values and its data-quality record as if only
-    `models` had been fetched: what the models built before v2 read."""
+    `models` had been fetched (validate_forecast's rules applied to them): what
+    the models built before v2 read."""
     vals = {k: v for k, v in values.items() if k in models}
     errors = [e for e in quality.get("errors", []) if not e.startswith("too_few_valid_models")]
     if len(vals) < min_models:
         errors.append(f"too_few_valid_models:{len(vals)}<{min_models}")
+    warnings = [w for w in quality.get("warnings", []) if not w.startswith("outlier:")]
+    if len(vals) >= 3:
+        warnings += [f"outlier:{m}" for m, v in vals.items()
+                     if abs(v - statistics.median([x for k, x in vals.items() if k != m])) > outlier_c]
     return vals, {**quality, "ok": not errors, "n_clean": len(vals), "errors": errors,
                   "rejected": {k: v for k, v in (quality.get("rejected") or {}).items() if k in models},
-                  "warnings": [w for w in quality.get("warnings", []) if w.split(":", 1)[-1] in models]}
+                  "warnings": warnings}
 
 
 def _parse_time(value) -> datetime | None:
@@ -470,7 +477,8 @@ class Engine:
         if sp is None:
             return None
         if self.nowcast.models is not None:   # its rules count the models it reads, as before the v2 model
-            values, quality = only_models(values, quality, self.nowcast.models, int(self.validation.min_models))
+            values, quality = only_models(values, quality, self.nowcast.models, int(self.validation.min_models),
+                                          float(self.validation.outlier_c))
         sp.inputs.update(production_prediction_id=pred_id, model_values_c=values, data_quality=quality)
         sid = self.db.insert(predictions, ts=now, market_id=m["id"], forecast_snapshot_id=fc["id"],
                              model_version=sp.model_version, lead_days=0, mu_c=sp.mu_c, sigma_c=sp.sigma_c,

@@ -232,7 +232,9 @@ Once a day the cycle refits the biases and errors from the last 120 days of
 what each model forecast 1–3 days ahead (Open-Meteo Previous Runs) and the
 METAR observations, and stores them in `model_stats` (every refit is kept;
 each prediction records the day its stats run to). A market whose station has
-no stats yet gets no prediction and no bet.
+no stats yet gets no production prediction and no bet from it; the shadow
+models still price it, and in its own window the same-day model can still bet
+through its own anchor.
 
 Backtested day by day on Jun 1 to Sep 26 2026 (each day priced as the bot
 would have priced it, with stats up to the day before the decision), the

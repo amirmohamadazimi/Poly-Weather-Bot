@@ -263,6 +263,41 @@ def test_a_station_that_fails_again_is_retried_again_and_never_blocks_the_daily_
     assert stats_refresh.pending_retry(db) == {}
 
 
+def test_an_empty_answer_keeps_the_previous_stats_and_is_retried(tmp_path):
+    cfg = wcfg(tmp_path)
+    db = Database(cfg.app.database_url)
+    stats_refresh.refresh(db, cfg, FakeHistory(), FakeTruth(), "w", NOW)
+    good = stats_refresh.load(db)[("KLGA", "high", 1)]
+
+    class NoKLGA(FakeTruth):
+        def fetch(self, st, start, end):
+            return {"high": {}, "low": {}} if st.code == "KLGA" else super().fetch(st, start, end)
+    later = NOW + timedelta(hours=24)
+    out = stats_refresh.refresh(db, cfg, FakeHistory(), NoKLGA(), "w", later)
+    assert out["failed"]["KLGA"].startswith("no usable data") and out["rows"] == out["stations"] * 6
+    assert stats_refresh.load(db)[("KLGA", "high", 1)].as_dict() == good.as_dict()
+    assert stats_refresh.load(db)[("EGLC", "high", 1)].last_day == "2026-09-27"
+    assert stats_refresh.pending_retry(db)["stations"] == ["KLGA"]
+
+
+def test_a_retry_that_crashes_waits_retry_hours_before_trying_again(tmp_path):
+    cfg = wcfg(tmp_path)
+    db = Database(cfg.app.database_url)
+    retry = timedelta(hours=float(cfg.model_stats.retry_hours))
+    stats_refresh.refresh(db, cfg, FakeHistory(fail=("KLGA",)), FakeTruth(), "w", NOW)
+
+    class Garbled(FakeHistory):
+        def fetch(self, st, start, end, leads):
+            self.calls.append(st.code)
+            return {lead: {"high": {start.isoformat(): None}, "low": {}} for lead in leads}
+    hist = Garbled()
+    with pytest.raises(AttributeError):
+        stats_refresh.refresh(db, cfg, hist, FakeTruth(), "w", NOW + retry)
+    assert stats_refresh.pending_retry(db) == {"at": (NOW + 2 * retry).isoformat(), "stations": ["KLGA"]}
+    soon = stats_refresh.refresh(db, cfg, hist, FakeTruth(), "w", NOW + retry + timedelta(minutes=30))
+    assert soon["skipped"] == "not due" and hist.calls == ["KLGA"]
+
+
 def test_a_refresh_that_fetches_nothing_retries_sooner(tmp_path):
     cfg = wcfg(tmp_path)
     db = Database(cfg.app.database_url)
@@ -311,15 +346,22 @@ def test_markets_of_a_station_without_stats_get_no_prediction_but_still_their_sh
 
 
 def test_only_models_recounts_a_forecasts_quality_for_the_models_it_keeps():
-    values = {m: 15.0 for m in ALL}
-    quality = {"ok": True, "n_clean": 7, "errors": [], "rejected": {"ukmo_seamless": "stale_model_run",
-               "gfs_seamless": "out_of_range"}, "warnings": ["outlier:ecmwf_ifs", "outlier:jma_seamless"]}
-    vals, q = only_models(values, quality, set(V1), 3)
-    assert set(vals) == set(V1) and q["ok"] and q["n_clean"] == 5
-    assert q["rejected"] == {"gfs_seamless": "out_of_range"} and q["warnings"] == ["outlier:jma_seamless"]
-    failing = {**quality, "ok": False, "errors": ["too_few_valid_models:2<3"]}
-    vals, q = only_models(values, failing, {"a", "jma_seamless"}, 3)
-    assert vals == {"jma_seamless": 15.0} and not q["ok"] and q["errors"] == ["too_few_valid_models:1<3"]
+    from types import SimpleNamespace
+
+    from wxbot.data.validation import validate_forecast
+    rules = SimpleNamespace(min_temp_c=-70.0, max_temp_c=60.0, max_model_run_age_hours=36, outlier_c=8.0,
+                            min_models=3)
+    values = {**{m: 19.0 for m in ALL}, "ecmwf_ifs025": 10.0, "gfs_seamless": 10.0, "icon_seamless": 10.0}
+    full = validate_forecast(values, {}, NOW, rules).as_dict()
+    assert full["warnings"] == ["outlier:ecmwf_ifs025", "outlier:gfs_seamless", "outlier:icon_seamless"]
+    vals, q = only_models(values, {**full, "rejected": {"ukmo_seamless": "stale_model_run"}}, set(V1), 3, 8.0)
+    alone = validate_forecast({m: values[m] for m in V1}, {}, NOW, rules).as_dict()
+    assert set(vals) == set(V1) and q["ok"] and q["n_clean"] == 5 and q["rejected"] == {}
+    assert q["warnings"] == alone["warnings"] == ["outlier:gem_seamless", "outlier:jma_seamless"]
+    failing = {**full, "ok": False, "errors": ["too_few_valid_models:2<3"]}
+    vals, q = only_models(values, failing, {"a", "jma_seamless"}, 3, 8.0)
+    assert vals == {"jma_seamless": 19.0} and not q["ok"] and q["errors"] == ["too_few_valid_models:1<3"]
+    assert q["warnings"] == []
 
 
 def test_every_configured_weather_model_has_a_run_time_source():

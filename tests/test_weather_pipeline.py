@@ -99,6 +99,28 @@ def test_run_time_lookup_failure_degrades_to_unknown():
     assert om.model_runs() == {"ecmwf_ifs025": None, "not_a_model": None}
 
 
+def test_a_retired_dataset_gives_an_unknown_run_time_not_a_stale_one(monkeypatch):
+    now = 1_792_080_000          # 2026-10-15T16:00Z
+    monkeypatch.setattr("wxbot.data.weather.time.time", lambda: now)
+    metas = {"ncep_gfs013": {"last_run_initialisation_time": now - 6 * 3600, "data_end_time": now + 16 * 86400},
+             "cmc_gem_gdps_15km": {"last_run_initialisation_time": now - 12 * 3600},   # no data_end_time
+             "jma_gsm": {"last_run_initialisation_time": 1779753600, "data_end_time": 1780628400}}   # ended June
+
+    class Meta:
+        def get(self, url, *a, **kw):
+            ds = url.split("/data/")[1].split("/")[0]
+
+            class R:
+                def raise_for_status(self): ...
+                def json(self): return metas[ds]
+            return R()
+    om = OpenMeteoForecast(["gfs_seamless", "gem_seamless", "jma_seamless"], session=Meta())
+    runs = om.model_runs()
+    assert runs["gfs_seamless"] == "2026-10-15T10:00:00+00:00"
+    assert runs["gem_seamless"] == "2026-10-15T04:00:00+00:00"
+    assert runs["jma_seamless"] is None
+
+
 def test_migration_adds_columns_to_an_old_database(tmp_path):
     url = f"sqlite:///{tmp_path / 'old.sqlite3'}"
     db = Database(url)
