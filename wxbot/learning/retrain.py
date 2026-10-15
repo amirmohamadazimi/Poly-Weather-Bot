@@ -32,7 +32,9 @@ exactly those markets. If the previous set does better by the same rule, it
 is put back and the deployed set is marked rolled_back.
 
 Learning never changes anything but these parameters, and only through this
-rule; `[learning] enabled = false` turns both off.
+rule; `[learning] enabled = false` turns both off, and so does the v2 model in
+production ([model] version weighted-multimodel), which refits its own biases
+daily (wxbot/learning/model_stats.py).
 """
 from __future__ import annotations
 
@@ -49,9 +51,11 @@ from wxbot.data.stations import get_station
 from wxbot.db import Database, prediction_outcomes
 from wxbot.evaluation.metrics import LOG_LOSS_EPS
 from wxbot.learning import params
-from wxbot.model.registry import production_model
+from wxbot.model.registry import is_weighted, param_model
 
 MIN_STATIONS = 5     # fewer stations than this cannot give a meaningful station bootstrap
+WEIGHTED = ("the production model (weighted-multimodel) refits its own biases daily "
+            "(wxbot/learning/model_stats.py), so the station bias/spread sets are not retrained")
 
 
 def _loss(p: float, y: int) -> float:
@@ -73,7 +77,7 @@ def ledger(db: Database, model_version: str, *where) -> list[dict]:
 def reprice(rows: list[dict], p: params.Params, cfg) -> list[float]:
     """The production model's probability for each ledger row with param set
     `p`, from the model values stored when the prediction was made."""
-    model = production_model(cfg)
+    model = param_model(cfg)
     return [model.predict(Bucket(x["bucket_lo"], x["bucket_hi"], x["unit"]), x["kind"],
                           x["inputs"]["model_values_c"], x["lead_days"],
                           p.calibration(x["station"], x["kind"], x["lead_days"])).p_yes for x in rows]
@@ -151,6 +155,8 @@ def retrain(db: Database, cfg, history, observer, now: datetime, force: bool = F
     """One retraining round; see the module docstring. `history` fetches past
     forecasts (Open-Meteo Previous Runs), `observer` observed highs/lows."""
     L = cfg.learning
+    if is_weighted(cfg):
+        return {"skipped": WEIGHTED}
     if not force and not L.enabled:
         return {"skipped": "learning is disabled"}
     if not force and not due(db, cfg, now):
@@ -244,6 +250,8 @@ def retrain(db: Database, cfg, history, observer, now: datetime, force: bool = F
 def check_rollback(db: Database, cfg, now: datetime) -> dict:
     """Compare the deployed set with the one it replaced on the resolved
     markets it priced; put the previous set back if it does reliably better."""
+    if is_weighted(cfg):
+        return {"skipped": WEIGHTED}
     if not cfg.learning.enabled:
         return {"skipped": "learning is disabled"}
     prod, prev = params.production(db), params.get(db, status="previous")

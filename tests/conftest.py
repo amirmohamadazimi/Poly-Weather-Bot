@@ -162,13 +162,22 @@ class Clock:
         return self.now
 
 
+@pytest.fixture(autouse=True)
+def v1_in_production(monkeypatch):
+    """The tests written for normal-multimodel-v1 keep it in production, also
+    where the config is loaded from the environment (the CLI); the v2 model is
+    tested in tests/test_weighted.py."""
+    monkeypatch.setenv("WXBOT_MODEL__VERSION", "normal-multimodel-v1")
+
+
 @pytest.fixture
 def cfg(tmp_path):
     # The market anchor (tests/test_anchor.py) keeps a fresh database from betting
     # until it has resolved markets to judge it on; elsewhere the model-only rules
     # are what is tested. The same-day model is tested in tests/test_nowcast.py.
     return load_config(env={"WXBOT_APP__DATABASE_URL": f"sqlite:///{tmp_path / 'test.sqlite3'}",
-                            "WXBOT_MARKET_ANCHOR__ENABLED": "false", "WXBOT_NOWCAST__ENABLED": "false"})
+                            "WXBOT_MARKET_ANCHOR__ENABLED": "false", "WXBOT_NOWCAST__ENABLED": "false",
+                            "WXBOT_MODEL__VERSION": "normal-multimodel-v1"})
 
 
 def make_engine(cfg, db=None, pm=None, forecast=None, clock=None, shadows=None, observer=None, nowcast=None):

@@ -13,7 +13,9 @@ and that is when the market is priced. At that instant each row gets:
 
 * market: the last YES price at or before it. A market not listed yet, or
   with no price point yet, is skipped and counted.
-* model: the production model, with the station's bias and error spread for
+* model: the production model (normal-multimodel-v1 when the v2 model is in
+  production: the model the bias/spread sets are for, on its own five weather
+  models), with the station's bias and error spread for
   that lead fitted on days that ended before it (at most `train_days` back,
   observations through D - N - 1). With fewer than
   model.min_calibration_samples such days it uses the default spread and no
@@ -43,7 +45,7 @@ from wxbot.features import Features, climatology_window
 from wxbot.model.base import Calibration
 from wxbot.model.baselines import Climatology, RawForecast
 from wxbot.model.normal import default_calibration
-from wxbot.model.registry import production_model
+from wxbot.model.registry import is_weighted, param_model, v1_models
 
 RESULT_FALLBACK = timedelta(hours=48)   # result assumed known this long after the day ends without a close time
 
@@ -104,12 +106,14 @@ def load_prices(db: Database, market_ids: list[str]) -> dict[str, tuple[list, li
     return out
 
 
-def load_forecasts(db: Database, stations: set[str]) -> dict[tuple, dict[str, dict[str, float]]]:
-    """(station, kind, lead) -> {local_date: {model: value_c}}; a later fetch replaces an earlier one."""
+def load_forecasts(db: Database, stations: set[str], models: list[str] | None = None) -> dict[tuple, dict]:
+    """(station, kind, lead) -> {local_date: {model: value_c}}, of `models` only
+    when given; a later fetch replaces an earlier one."""
     hf = historical_forecasts.c
     out: dict[tuple, dict] = defaultdict(lambda: defaultdict(dict))
+    where = [hf.station.in_(stations)] + ([hf.model.in_(models)] if models is not None else [])
     for r in db.rows(select(hf.station, hf.kind, hf.lead_days, hf.local_date, hf.model, hf.value_c)
-                     .where(hf.station.in_(stations)).order_by(hf.id)):
+                     .where(*where).order_by(hf.id)):
         out[(r["station"], r["kind"], r["lead_days"])][r["local_date"]][r["model"]] = r["value_c"]
     return out
 
@@ -169,7 +173,7 @@ def replay(cfg, db: Database, start: date, end: date, stations: list[str] | None
     delay = float(b.forecast_delay_hours)
     leads = [int(x) for x in b.leads]
     mc = cfg.model
-    model = production_model(cfg)
+    model = param_model(cfg)
     window = int(mc.get("climatology_window_days", 7))
     raw = RawForecast(list(mc.default_sigma_c), mc.prob_floor, mc.prob_ceiling)
     clim = Climatology(window, int(mc.get("climatology_min_samples", 20)), mc.prob_floor, mc.prob_ceiling)
@@ -177,7 +181,7 @@ def replay(cfg, db: Database, start: date, end: date, stations: list[str] | None
     mks = load_markets(db, start, end, stations)
     codes = {m["station"] for m in mks}
     prices = load_prices(db, [m["id"] for m in mks])
-    forecasts = load_forecasts(db, codes)
+    forecasts = load_forecasts(db, codes, v1_models(cfg) if is_weighted(cfg) else None)
     observations = load_observations(db, codes)
     fits = BiasFits(cfg, forecasts, observations)
     min_models = int(cfg.weather.min_models)

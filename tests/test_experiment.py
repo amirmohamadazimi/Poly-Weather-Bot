@@ -118,3 +118,11 @@ def test_report_and_dashboard_show_the_day_and_how_the_bot_ran(cfg):
 def test_the_experiment_workflow_pins_30_days():
     wf = (ROOT / ".github/workflows/paper-trading-100.yml").read_text()
     assert 'WXBOT_EXPERIMENT__DAYS: "30"' in wf
+
+
+def test_experiment_3_has_its_own_name_bankroll_length_and_branch():
+    wf = (ROOT / ".github/workflows/paper-trading-v3.yml").read_text()
+    for pin in ('WXBOT_EXPERIMENT__DAYS: "30"', 'WXBOT_BANKROLL__INITIAL: "100"', "STATE_BRANCH: v3-paper-trade",
+                "WXBOT_EXPERIMENT__NAME: exp3-v3-100usd", "WXBOT_APP__MODE: paper", "group: paper-trading-v3"):
+        assert pin in wf
+    assert "paper-data-100" not in wf and "MIN_MODEL_PROB" not in wf

@@ -67,9 +67,9 @@ one-month experiment:
 
 ```
 markets (Gamma API) ──────────────────────┐
-forecasts (Open-Meteo, 5 models) ─────────┼─> prediction ─> calibrated probability ─> signal (rules) ─> paper bet
-bias/spread set (backtest, retraining) ───┘
-paper bet ─> settlement (Polymarket resolution) ─> stats and learning (ledger, weekly retraining)
+forecasts (Open-Meteo, 12 models) ────────┼─> prediction ─> calibrated probability ─> signal (rules) ─> paper bet
+per-model biases (refitted daily) ────────┘
+paper bet ─> settlement (Polymarket resolution) ─> stats and learning (ledger, daily bias refresh)
 ```
 
 1. **Discover** open `daily-temperature` events. The resolution station is read
@@ -77,14 +77,16 @@ paper bet ─> settlement (Polymarket resolution) ─> stats and learning (ledge
    markets whose station is not in `wxbot/data/stations.py` are shown but never traded.
    The resolution rules in the market text are checked too (see
    [Resolution criteria](#resolution-criteria)).
-2. **Forecast** the station's daily max/min for its local calendar day from five
-   Open-Meteo models (ECMWF, GFS, ICON, GEM, JMA).
-3. **Predict** with `normal-multimodel-v1`: a normal distribution centred on the
-   bias-corrected model mean, with sigma = the larger of the fitted error spread and
-   the models' disagreement. The bias and spread come from the production
-   parameter set (see [How the learning system works](#how-the-learning-system-works)). Bucket probability accounts for whole-degree
-   reporting. Probabilities are clamped to 1–99%. Two baselines are priced on
-   the same inputs but never traded (see [Models and baselines](#models-and-baselines)).
+2. **Forecast** the station's daily max/min for its local calendar day from
+   twelve Open-Meteo models (ECMWF IFS at two resolutions and its AI model,
+   GFS, ICON, GEM, JMA, UKMO, Météo-France, CMA, and NBM and HRRR in the US).
+3. **Predict** with `weighted-multimodel-v1` (see [Production model](#production-model-weighted-multimodel-v1)):
+   each weather model corrected by its own recent bias at the station and
+   weighted by its recent accuracy there, with a spread from the combined
+   forecast's recent error and today's disagreement between the models. Bucket
+   probability accounts for whole-degree reporting. Probabilities are clamped
+   to 1–99%. The earlier model and two baselines are priced on the same inputs
+   but never traded (see [Models and baselines](#models-and-baselines)).
 4. **Calibrate** the probability with the approved probability calibrator, if
    there is one (see [Probability calibration](#probability-calibration)).
    Otherwise the model's own probability is used unchanged.
@@ -100,8 +102,8 @@ paper bet ─> settlement (Polymarket resolution) ─> stats and learning (ledge
    book (taking at most 25% of each level, plus slippage and fees).
 8. **Settle** when Polymarket resolves the market (prices pinned to 1/0).
 9. **Learn:** record the prediction, its inputs, price, decision and result in
-   the learning ledger, and retrain the station bias and spread once a week,
-   deploying a new set only if it does better on markets it was not fitted on.
+   the learning ledger, and refit every weather model's bias and error at
+   every station once a day (`[model_stats]`).
 
 Every row is insert-only, and the chain bet → signal (with every rule result
 and sizing cap) → prediction (with every model input) → forecast snapshot lets
@@ -197,8 +199,9 @@ anomaly from it. The features are stored with each production prediction.
 
 | Model | Role | What it is |
 |---|---|---|
-| `normal-multimodel-v1` | production | Bias-corrected model mean, backtest-fitted sigma (above). The only model that trades |
-| `raw-forecast-v1` | shadow | The same normal model on the raw model mean, with no station bias correction and the default sigma for the lead time |
+| `weighted-multimodel-v1` | production | Skill-weighted, bias-corrected combination of twelve models (below). The only model that trades |
+| `normal-multimodel-v1` | shadow | The earlier production model: the mean of five models (ECMWF, GFS, ICON, GEM, JMA) shifted by the station bias, with sigma the larger of the fitted error spread and the models' disagreement (see [How the learning system works](#how-the-learning-system-works)) |
+| `raw-forecast-v1` | shadow | The same normal model on the raw five-model mean, with no station bias correction and the default sigma for the lead time |
 | `climatology-v1` | shadow | How often the observed high/low, in whole degrees, fell in the bucket on days within 7 days of the same date in past years. Ignores the forecast; no prediction with fewer than 20 past days |
 | `nowcast-v1` | shadow (same-day) | On the market's own day: the station's reports so far plus the newest hourly forecast for the rest of the day. Can bet only through its own market anchor (see [Same-day model](#same-day-model-forward-test)) |
 
@@ -207,7 +210,39 @@ stored with `role = "shadow"` and never create a signal or a bet. The
 `model_versions` table is the registry: each model version, its calibration
 version, feature set, parameters and current role (production, shadow or
 retired). A version removed from the config is marked retired, never deleted.
-Changing a model means giving it a new version.
+Changing a model means giving it a new version. The models built before the v2
+model (`normal-multimodel-v1`, `raw-forecast-v1`, the same-day model, the
+station bias/spread sets and the backtests) read only their five models,
+`[model] v1_models`, out of the twelve fetched, so they behave as before.
+
+### Production model: weighted-multimodel-v1
+
+For every station, high or low, and lead time of 1 to 3 days, each weather
+model's errors against the station's observed highs and lows are tracked as
+exponentially weighted means: its bias (half-life 10 days) and its squared
+error after that bias (half-life 30 days). The forecast is the weighted mean of
+the bias-corrected models, each weighted by 1 / its squared error, and its
+spread is `log sigma = a0 + a1 log(sd) + a2 log(spread + 0.1)`, where sd is the
+combined forecast's own recent error and spread today's disagreement between
+the bias-corrected models. a0..a2 (`wxbot/model/weighted_params.json`) are
+fitted per kind and lead by `research/fit_weighted.py` on Dec 2025 to Oct 2026,
+from the data on the `research-intraday` branch.
+
+Once a day the cycle refits the biases and errors from the last 120 days of
+what each model forecast 1–3 days ahead (Open-Meteo Previous Runs) and the
+METAR observations, and stores them in `model_stats` (every refit is kept;
+each prediction records the day its stats run to). A market whose station has
+no stats yet gets no prediction and no bet.
+
+Backtested day by day on Jun 1 to Sep 26 2026 (each day priced with what was
+known the day before), the day-ahead high's mean absolute error fell from
+0.84 °C (five-model mean with the same rolling bias) and 1.13 °C (raw
+five-model mean) to 0.79 °C. Against the market it is still the weaker
+forecast: on 16,099 resolved markets with tight books, its log loss was higher
+than the mid price's at every lead, and the US National Weather Service's own
+guidance (NBM and GFS MOS) did worse still. Like every production model it can
+bet only through the [market anchor](#market-anchor), so only once it has
+beaten the market price on markets it was not fitted on.
 
 Climatology needs past observations: `python main.py climatology --years 3`
 loads them from the IEM METAR archive (one request per station-year, about
@@ -338,7 +373,9 @@ added. A cycle that records significant errors logs one
 `SIGNIFICANT_MODEL_ERROR` event listing them, and the Learning tab breaks the
 errors down to find recurring patterns.
 
-**Retraining the station bias and spread.** The production model shifts the
+**Retraining the station bias and spread.** This applies to
+`normal-multimodel-v1`; while the v2 model is in production, which refits its
+own biases daily, it is skipped. That model shifts the
 forecast by a bias and widens it by an error spread, fitted per station,
 high/low and lead time. Each fit is a versioned parameter set (`param_sets`),
 and every prediction records the set that priced it. Every 7 days the cycle:
@@ -542,8 +579,12 @@ branch, not from `main`; see [docs/experiments.md](docs/experiments.md).
 way from the newest commit of `main` that passed CI ([docs/ci.md](docs/ci.md)), with its state, REPORT.md and RESEARCH.md on the `paper-data-100` branch and its runs
 offset from experiment 1's. Its first runs also load three years of observed
 highs and lows for the climatology baseline. GitHub fires scheduled runs about
-every 7–8 hours in practice, so the two experiments together use roughly 1,400
-of the 2,000 free minutes a month.
+every 7–8 hours in practice. The repository is public, so Actions minutes are free.
+
+`.github/workflows/paper-trading-v3.yml` runs experiment 3 ($100, from
+2026-10-15, with the v2 model) the same way, with its state on the
+`v3-paper-trade` branch. Since it started, experiments 1 and 2 open no new
+bets; their runs go on so their open bets settle.
 
 ## Running on a server (Phase 2)
 
@@ -596,7 +637,8 @@ PostgreSQL, install `psycopg[binary]` and set `WXBOT_APP__DATABASE_URL`.
 main.py                     CLI entry point
 config.toml                 all settings
 wxbot/data/                 Polymarket, Open-Meteo, METAR clients; station table
-wxbot/model/                predictor interface, normal multi-model v1, baselines, same-day model, registry
+wxbot/model/                predictor interface, weighted multi-model v2, normal multi-model v1, baselines,
+                            same-day model, registry
 wxbot/features.py           the feature set every model sees
 wxbot/calibration/          isotonic and Platt probability calibration, walk-forward fit and approval
 wxbot/history.py            loads past observations for the climatology baseline
@@ -604,14 +646,15 @@ wxbot/strategy/             betting rules, fill simulation, sizing
 wxbot/execution/            paper broker (cash check), bankroll ledger and mark-to-market, live-trading guard
 wxbot/experiment.py         records which experiment a database holds
 wxbot/evaluation/           metrics (ROI, drawdown, Brier, log loss, ECE, model comparison), error analysis
-wxbot/learning/             learning ledger, versioned bias/spread sets, retraining, approval and rollback
+wxbot/learning/             learning ledger, the v2 model's daily bias refresh, versioned bias/spread sets,
+                            retraining, approval and rollback
 wxbot/health.py             data-source, database and model status for the dashboard
 wxbot/engine.py             one cycle: collect -> predict -> bet -> settle
 wxbot/runner.py             background loop
 wxbot/backtest.py           walk-forward forecast backtest + calibration fit
 wxbot/backtesting/          market backtest: collect, replay with no look-ahead, evaluate, BACKTEST.md
 wxbot/web/                  dashboard (FastAPI + one HTML page)
-research/                   data pull and fit for the same-day model's parameters
+research/                   data pulls and fits for the v2 model's and the same-day model's parameters
 tests/                      offline tests (no network)
 ```
 

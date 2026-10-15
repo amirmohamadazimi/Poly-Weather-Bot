@@ -53,13 +53,14 @@ def day_bounds(tz: str, local_date: str) -> tuple[datetime, datetime]:
             datetime.combine(d + timedelta(days=1), datetime.min.time(), z).astimezone(UTC))
 
 
-def hourly_series(hourly: dict | None, tz: str, min_models: int) -> list[tuple[datetime, float]]:
-    """A forecast snapshot's hourly_c -> [(UTC hour, mean of the models)];
-    hours with fewer than `min_models` values are left out."""
+def hourly_series(hourly: dict | None, tz: str, min_models: int,
+                  models: set[str] | None = None) -> list[tuple[datetime, float]]:
+    """A forecast snapshot's hourly_c -> [(UTC hour, mean of the models)], of
+    `models` only when given; hours with fewer than `min_models` values are left out."""
     if not hourly:
         return []
     z = ZoneInfo(tz)
-    series = list((hourly.get("values") or {}).values())
+    series = [v for m, v in (hourly.get("values") or {}).items() if models is None or m in models]
     out = []
     for i, t in enumerate(hourly.get("time") or []):
         vals = [s[i] for s in series if i < len(s) and s[i] is not None]
@@ -127,8 +128,10 @@ class Nowcast:
     feature_set = FEATURE_SET
 
     def __init__(self, fitted: dict, prob_floor: float = 0.001, prob_ceiling: float = 0.999,
-                 max_report_age_minutes: float = 120, min_models: int = 2):
+                 max_report_age_minutes: float = 120, min_models: int = 2, models: list[str] | None = None):
         self.fitted = fitted
+        # the weather models it was fitted on, when more are fetched (wxbot/model/registry.py); None = all
+        self.models = None if models is None else set(models)
         self.version = fitted["version"]
         self.prob_floor, self.prob_ceiling = prob_floor, prob_ceiling
         self.max_report_age = timedelta(minutes=max_report_age_minutes)
@@ -146,7 +149,7 @@ class Nowcast:
         hours_left = (end - now).total_seconds() / 3600
         if not start < now < end:
             return None
-        s = day_state(reports, hourly_series(hourly, tz, self.min_models), start, end, now, kind)
+        s = day_state(reports, hourly_series(hourly, tz, self.min_models, self.models), start, end, now, kind)
         if s is None or now - s["last_report"] > self.max_report_age:
             return None
         band = hour_band(hours_left)

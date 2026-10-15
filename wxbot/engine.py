@@ -1,7 +1,7 @@
 """The paper-trading cycle:
 
-collect markets -> collect forecasts (and today's station reports) -> predict
--> signal -> paper bet -> check resolutions -> settle -> learn
+collect markets -> collect forecasts (and today's station reports) -> refresh
+the v2 model's biases (daily) -> predict -> signal -> paper bet -> check resolutions -> settle -> learn
 (wxbot/learning/) -> snapshot bankroll.
 
 Each step is isolated: a failure is logged to system_events and the rest of
@@ -31,7 +31,7 @@ from wxbot.execution import portfolio
 from wxbot.execution.paper import BrokerRefused
 from wxbot.experiment import check_end, ensure_experiment, is_open
 from wxbot.features import FEATURE_SET, Features, build_features, climatology_window, observed_history
-from wxbot.learning import learn, outcomes, retrain
+from wxbot.learning import learn, model_stats, outcomes, retrain
 from wxbot.learning import params as param_sets
 from wxbot.model import nowcast as same_day
 from wxbot.model.base import Calibration
@@ -81,7 +81,8 @@ class Engine:
         self.nowcast = nowcast        # same-day model (wxbot/model/nowcast.py); None = off
         self.broker = broker
         self.sizer = sizer
-        self.history = history    # past forecasts (Open-Meteo Previous Runs) for retraining; None = no retraining
+        self.history = history    # past forecasts (Open-Meteo Previous Runs) for retraining and the v2 model's
+        #                           biases (wxbot/learning/); None = neither
         self.clock = clock
         v = cfg.get("validation")
         self.validation = SimpleNamespace(**(v.as_dict() if v else {}), min_models=cfg.weather.min_models)
@@ -98,6 +99,7 @@ class Engine:
             ("markets", self.collect_markets),
             ("forecasts", self.collect_forecasts),
             ("reports", self.collect_reports),
+            ("model_stats", self.refresh_model_stats),
             ("calibration", self.maybe_fit_calibration),
             ("market_anchor", self.maybe_fit_anchor),
             ("signals", self.predict_and_trade),
@@ -281,6 +283,16 @@ class Engine:
     def _calibration(self, station: str, kind: str, lead_days: int) -> Calibration:
         return self._params().calibration(station, kind, lead_days)
 
+    def refresh_model_stats(self, force: bool = False) -> dict:
+        """The v2 model (wxbot/model/weighted.py) only: refit its biases and
+        errors when due (wxbot/learning/model_stats.py), then load the newest."""
+        if not hasattr(self.predictor, "stats"):
+            return {"enabled": False}
+        out = model_stats.refresh(self.db, self.cfg, self.history, self.observer, self.predictor.version,
+                                  self.clock(), force)
+        self.predictor.stats = model_stats.load(self.db)
+        return {**out, "loaded": len(self.predictor.stats)}
+
     # -- 3. probability calibration ---------------------------------------
     def maybe_fit_calibration(self, force: bool = False) -> dict:
         """Refit the probability calibrators at most every refit_hours (DB only,
@@ -329,7 +341,7 @@ class Engine:
     # -- 4. predictions, signals, paper bets ---------------------------------
     def predict_and_trade(self) -> dict:
         now = self.clock()
-        n_pred = n_shadow = n_bets = 0
+        n_pred = n_shadow = n_bets = n_none = 0
         params = self._params()
         calibrator = active_calibrator(self.db, self.cfg, self.predictor.version, now, params.ps)
         c = self.cfg.get("market_anchor")
@@ -360,6 +372,9 @@ class Engine:
                 features[key] = self._features(m, st, fc, values, lead_days, now, history)
             feats = features[key]
             pred = self.predictor.predict(bucket, m["kind"], values, lead_days, calib, feats)
+            if pred is None:   # the v2 model without the station's biases yet: no prediction, so no signal
+                n_none += 1
+                continue
             pred.inputs["data_quality"] = quality
             fetched_at = fc["fetched_at"] if fc["fetched_at"].tzinfo else fc["fetched_at"].replace(tzinfo=UTC)
             pred.inputs["forecast_fetched_at"] = fetched_at.isoformat()
@@ -392,7 +407,8 @@ class Engine:
         for version, err in shadow_errors.items():
             self.db.log_event("WARNING", "shadow_model", f"{version}: {err}")
         self.db.set_state("last_prediction_time", now.isoformat())
-        return {"predictions": n_pred, "shadow_predictions": n_shadow, "bets": n_bets}
+        out = {"predictions": n_pred, "shadow_predictions": n_shadow, "bets": n_bets}
+        return {**out, "no_prediction": n_none} if n_none else out
 
     def _features(self, m: dict, st, fc: dict, values: dict, lead_days: int, now: datetime, history: dict):
         hkey = (m["station"], m["kind"])

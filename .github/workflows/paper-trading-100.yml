@@ -10,7 +10,8 @@
 # The starting bankroll, experiment name and length (30 days) are pinned here,
 # so a config change cannot alter them.
 #
-# The SQLite database lives on the `paper-data-100` branch as wxbot.sqlite3.gz
+# The SQLite database lives on the `paper-data-100` branch as wxbot.sqlite3.gz, in
+# 90 MB parts once it outgrows that because GitHub refuses files over 100 MB
 # (a single commit that is replaced each run, so the repo does not grow). Each
 # run restores it, runs one cycle, writes REPORT.md next to it, and pushes it
 # back. Every run also uploads the database as a workflow artifact as a backup,
@@ -88,6 +89,11 @@ jobs:
           mkdir -p "$STATE_DIR"
           if git fetch --depth=1 origin "$STATE_BRANCH"; then
             git archive FETCH_HEAD | tar -x -C "$STATE_DIR"
+            # a database over 90 MB gzipped is saved in parts (GitHub refuses files over 100 MB)
+            if compgen -G "$STATE_DIR/wxbot.sqlite3.gz.part-*" > /dev/null; then
+              cat "$STATE_DIR"/wxbot.sqlite3.gz.part-* > "$STATE_DIR/wxbot.sqlite3.gz"
+              rm "$STATE_DIR"/wxbot.sqlite3.gz.part-*
+            fi
             if [ -f "$STATE_DIR/wxbot.sqlite3.gz" ]; then
               gunzip -f "$STATE_DIR/wxbot.sqlite3.gz"
             fi
@@ -132,6 +138,10 @@ jobs:
         run: |
           cd "$STATE_DIR"
           gzip -9 -f wxbot.sqlite3
+          if [ "$(stat -c %s wxbot.sqlite3.gz)" -gt $((90 * 1024 * 1024)) ]; then
+            split -b 90m -d -a 2 wxbot.sqlite3.gz wxbot.sqlite3.gz.part-   # join with: cat wxbot.sqlite3.gz.part-* > wxbot.sqlite3.gz
+            rm wxbot.sqlite3.gz
+          fi
           git init -q -b "$STATE_BRANCH"
           git config user.name "paper-trading-bot"
           git config user.email "paper-trading-bot@users.noreply.github.com"

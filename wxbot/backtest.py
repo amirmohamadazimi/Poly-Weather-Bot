@@ -33,6 +33,7 @@ from wxbot.evaluation.metrics import brier, calibration_bins
 from wxbot.learning import params as param_sets
 from wxbot.learning.params import fit
 from wxbot.model.normal import NormalMultiModel, c_to_unit
+from wxbot.model.registry import param_model
 
 log = logging.getLogger("wxbot.backtest")
 MIN_TRAIN = 14
@@ -72,7 +73,7 @@ def bucket_pairs(predictor: NormalMultiModel, values: dict, obs_c: float, unit: 
 
 def run_backtest(cfg, db: Database, forecaster, observer, stations: list[str] | None = None,
                  days: int = 90, leads: tuple[int, ...] = (1, 2, 3), end: date | None = None) -> dict:
-    predictor = NormalMultiModel(cfg.model.version, cfg.model.prob_floor, cfg.model.prob_ceiling)
+    predictor = param_model(cfg)   # the model the station bias/spread is for
     end = end or (date.today() - timedelta(days=1))
     start = end - timedelta(days=days - 1)
     codes = stations or [s.code for s in STATIONS.values() if s.enabled]
