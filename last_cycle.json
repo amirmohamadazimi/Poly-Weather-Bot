@@ -1,0 +1,22 @@
+{
+  "markets": {
+    "seen": 3080,
+    "tradeable": 1716
+  },
+  "forecasts": {
+    "stations": 27,
+    "snapshots": 153
+  },
+  "signals": {
+    "predictions": 1683,
+    "bets": 0
+  },
+  "settlement": {
+    "checked": 0,
+    "bets_settled": 0
+  },
+  "observations": {
+    "skipped": true
+  },
+  "seconds": 15.7
+}
