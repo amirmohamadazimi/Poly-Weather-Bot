@@ -2,6 +2,12 @@
 # the v2 production model (weighted-multimodel-v1). Experiments 1 and 2 stopped
 # opening bets when this one started.
 #
+# From 2026-10-22 it bets without the market check ([market_anchor] off), by the
+# owner's decision: the check never approved the model (it adds nothing to the
+# market price on held-out markets), so with it on no bet was ever placed. The
+# rules now use the model's own calibrated probability, as before the check
+# existed; the same-day model never bets with the check off.
+#
 # Runs the newest commit of main on which CI (tests.yml: lint, types, tests,
 # build) passed, so merged improvements reach it but untested code never does:
 # while a new commit's CI is running or red, runs keep using the last green one.
@@ -46,6 +52,7 @@ jobs:
       WXBOT_BANKROLL__INITIAL: "100"
       WXBOT_EXPERIMENT__NAME: exp3-v3-100usd
       WXBOT_EXPERIMENT__DAYS: "30"   # then no new bets; open ones settle (recorded once, so it cannot move)
+      WXBOT_MARKET_ANCHOR__ENABLED: "false"   # bet without the market check (see the top of this file)
       STATE_BRANCH: v3-paper-trade
       STATE_DIR: ${{ github.workspace }}/state
       WXBOT_APP__DATABASE_URL: sqlite:///${{ github.workspace }}/state/wxbot.sqlite3

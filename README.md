@@ -244,8 +244,9 @@ five-model mean) to 0.81 °C. Against the market it is still the weaker
 forecast: on 16,099 resolved markets with tight books, its log loss was higher
 than the mid price's at every lead, and the US National Weather Service's own
 guidance (NBM and GFS MOS) did worse still. Like every production model it can
-bet only through the [market anchor](#market-anchor), so only once it has
-beaten the market price on markets it was not fitted on.
+bet only through the [market anchor](#market-anchor) while that is on (the
+default), so only once it has beaten the market price on markets it was not
+fitted on. Experiment 3 has run with it off since 2026-10-22.
 
 Climatology needs past observations: `python main.py climatology --years 3`
 loads them from the IEM METAR archive (one request per station-year, about
@@ -587,7 +588,9 @@ every 7–8 hours in practice. The repository is public, so Actions minutes are 
 `.github/workflows/paper-trading-v3.yml` runs experiment 3 ($100, from
 2026-10-15, with the v2 model) the same way, with its state on the
 `v3-paper-trade` branch. Since it started, experiments 1 and 2 open no new
-bets; their runs go on so their open bets settle.
+bets; their runs go on so their open bets settle. Since 2026-10-22 it bets
+without the market anchor (`WXBOT_MARKET_ANCHOR__ENABLED=false`), which had
+never approved the model ([docs/experiments.md](docs/experiments.md)).
 
 ## Running on a server (Phase 2)
 

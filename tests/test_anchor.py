@@ -208,7 +208,7 @@ def test_without_an_approved_anchor_no_bet_is_placed(on):
     assert eng.db.rows(select(paper_bets)) == []
     assert eng.db.one(select(system_events).where(system_events.c.component == "market_anchor"))
     assert eng.run_cycle()["market_anchor"] == {"skipped": True}     # refit at most every refit_hours
-    md = to_markdown(build_report(eng.db, on.bankroll.initial, NOW))
+    md = to_markdown(build_report(eng.db, on.bankroll.initial, NOW, cfg=on))
     assert "## Market anchor (latest fit)" in md and "New bets are paused" in md
 
 
@@ -247,3 +247,42 @@ def test_anchor_off_keeps_the_model_only_rules(cfg):
     assert sigs and all(_rule(s, "market_anchor") is None for s in sigs)
     assert all("anchored" not in s["rule_results"][0]["value"] for s in sigs)
     assert len(eng.db.rows(select(paper_bets))) == 1
+
+
+def test_turned_off_after_fits_it_bets_on_the_model_and_the_report_says_so(cfg):
+    db = Database(cfg.app.database_url)
+    db.insert(market_anchors, version="anchor-old", model_version=MODEL, fitted_at=NOW - timedelta(days=1), n=694,
+              n_train=486, n_holdout=208, params={"a": 0.06, "b": 1.06, "c": 0.11}, approved=False,
+              reason="the model adds nothing to the market price")
+    eng = make_engine(cfg, db=db)
+    assert eng.run_cycle()["market_anchor"] == {"enabled": False}
+    sigs = db.rows(select(signals))
+    assert sigs and all(_rule(s, "market_anchor") is None for s in sigs)
+    assert len(db.rows(select(paper_bets))) == 1                   # the unapproved fit no longer stops it
+    assert anchor_module.latest(db)["version"] == "anchor-old"     # and is not refitted while the check is off
+    rep = build_report(db, cfg.bankroll.initial, NOW, cfg=cfg)
+    assert not any("paused" in v for v in rep["verdict"])
+    assert any(v.startswith("The market check is off") and "was not approved: the model adds nothing" in v
+               for v in rep["verdict"])
+    md = to_markdown(rep)
+    assert "## Market anchor (off, last fit)" in md and "no longer refitted" in md
+    assert "## Market anchor (latest fit)" not in md and "The bot bets only on the model combined" not in md
+    events = [e["message"] for e in db.rows(select(system_events).where(system_events.c.component == "market_anchor"))]
+    assert events == ["market check off: bets use the model's own probability"]
+    # the database says what the bot did, whatever config the report is built with (a downloaded copy)
+    cfg._data["market_anchor"]["enabled"] = True
+    assert db.get_state("market_anchor_check") == "off"
+    assert any(v.startswith("The market check is off") for v in build_report(db, 100, NOW, cfg=cfg)["verdict"])
+    # turned back on: logged, refitted, and the report says bets are paused again
+    eng.run_cycle()
+    assert db.get_state("market_anchor_check") == "on"
+    assert db.one(select(system_events).where(system_events.c.message.like("market check on%")))
+    assert anchor_module.latest(db)["version"] != "anchor-old"
+    assert any(v.startswith("New bets are paused") for v in build_report(db, 100, NOW, cfg=cfg)["verdict"])
+
+
+def test_the_default_check_on_is_recorded_without_a_log_line(on):
+    eng = make_engine(on)
+    eng.run_cycle()
+    assert eng.db.get_state("market_anchor_check") == "on"
+    assert not eng.db.one(select(system_events).where(system_events.c.message.like("market check%")))

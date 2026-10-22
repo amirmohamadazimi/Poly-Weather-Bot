@@ -357,6 +357,19 @@ class Engine:
                                                        "log_loss_model", "log_loss_anchored",
                                                        "improvement_confidence", "approved")})
 
+    def _record_anchor_check(self, on: bool) -> None:
+        """Keep in the database whether bets wait for the market anchor, so a
+        report built from it with another config (a downloaded database) says
+        what the bot did. Each switch is logged; on, the default, is not logged
+        the first time."""
+        state, prev = ("on" if on else "off"), self.db.get_state("market_anchor_check")
+        if state == prev:
+            return
+        self.db.set_state("market_anchor_check", state)
+        if prev is not None or not on:
+            self.db.log_event("INFO", "market_anchor", "market check on: bets wait for an approved market anchor" if on
+                              else "market check off: bets use the model's own probability")
+
     # -- 4. predictions, signals, paper bets ---------------------------------
     def predict_and_trade(self) -> dict:
         now = self.clock()
@@ -364,6 +377,7 @@ class Engine:
         params = self._params()
         calibrator = active_calibrator(self.db, self.cfg, self.predictor.version, now, params.ps)
         c = self.cfg.get("market_anchor")
+        self._record_anchor_check(bool(c and c.enabled))
         anchor = market_anchor.active_anchor(self.db, self.cfg, self.predictor.version, now, params.ps) \
             if c and c.enabled else None
         # the same-day model may signal only through its own anchor, so never with the anchor off

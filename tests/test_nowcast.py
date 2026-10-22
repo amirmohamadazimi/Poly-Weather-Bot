@@ -302,6 +302,17 @@ def test_without_bet_the_same_day_model_only_shadows(betting):
     assert {r["model_version"] for r in linked} == {"normal-multimodel-v1"}
 
 
+def test_with_the_market_check_off_it_never_bets_even_with_an_approved_anchor(same_day):
+    assert same_day.nowcast.bet and not same_day.market_anchor.enabled
+    eng = _engine(same_day)
+    eng.db.insert(market_anchors, version="anchor-test", model_version=VERSION, fitted_at=MORNING - timedelta(hours=1),
+                  params={"a": 1.0, "b": 0.0, "c": 0.0}, approved=True, reason="test", scope="same-day")
+    eng.run_cycle()
+    p = predictions.c
+    linked = eng.db.rows(select(p.model_version).join(signals, signals.c.prediction_id == p.id))
+    assert linked and {r["model_version"] for r in linked} == {"normal-multimodel-v1"}
+
+
 def test_outside_its_window_the_production_signal_stands(betting):
     eng = _engine(betting, clock_now=datetime(2026, 9, 28, 22, 30, tzinfo=UTC))   # 30 min left
     eng.run_cycle()
@@ -385,6 +396,15 @@ def test_report_scores_the_same_day_model_against_the_market(betting):
     md = to_markdown(rep)
     assert "## Same-day model (forward test)" in md and "**not approved**" in md
     assert "| 6-12 | 400 | 400 |" in md
+
+
+def test_report_says_it_does_not_bet_with_the_market_check_off(same_day):
+    eng = _engine(same_day)
+    fit_time = _same_day_markets(eng.db, 400, model_noise=2.0, market_noise=0.2, seed=4)
+    anchor_module.fit_nowcast_round(eng.db, same_day, VERSION, fit_time)    # fitted while the check was on
+    md = to_markdown(build_report(eng.db, 100, fit_time, cfg=same_day))
+    assert "With the market check off it does not bet." in md and "Last anchor fit" in md
+    assert "It can bet only once" not in md and "Latest anchor fit" not in md
 
 
 def test_report_verdict_names_an_approved_same_day_model(betting):

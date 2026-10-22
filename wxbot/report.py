@@ -33,11 +33,14 @@ def build_report(db: Database, initial: float, now: datetime | None = None, cfg=
     cal = prediction_calibration(db)
     anchor = market_anchor.latest(db)
     same_anchor = market_anchor.latest(db, market_anchor.SAME_DAY)
+    # whether bets waited for the anchor: as the bot last ran (engine._record_anchor_check), else this config
+    check, anchor_cfg = db.get_state("market_anchor_check"), cfg.get("market_anchor")
+    anchor_on = check == "on" if check is not None else bool(anchor_cfg and anchor_cfg.enabled)
     same = {"scores": same_day_scores(market_anchor.nowcast_rows(db, cfg, now)), "anchor": same_anchor}
     return {"overview": ov, "prediction_calibration": cal, "model_comparison": model_comparison(db),
-            "calibrators": latest_calibrators(db), "market_anchor": anchor, "same_day": same,
-            "errors": error_analysis(db), "model_updates": learning_summary(db, limit=10),
-            "verdict": verdict(ov, cal) + anchor_verdict(anchor, same_anchor),
+            "calibrators": latest_calibrators(db), "market_anchor": anchor, "market_anchor_on": anchor_on,
+            "same_day": same, "errors": error_analysis(db), "model_updates": learning_summary(db, limit=10),
+            "verdict": verdict(ov, cal) + anchor_verdict(anchor, same_anchor, anchor_on),
             "operation": operation(db, current(db), now), "status": status(db), "bets": all_bets(db)}
 
 
@@ -98,8 +101,16 @@ def verdict(ov: dict, cal: dict) -> list[str]:
     return notes
 
 
-def anchor_verdict(anchor: dict | None, same_day: dict | None = None) -> list[str]:
-    if anchor is None or anchor["approved"]:
+def anchor_verdict(anchor: dict | None, same_day: dict | None = None, on: bool = True) -> list[str]:
+    if anchor is None:
+        return []
+    if not on:
+        # turned off after it was fitted: the fits below are stale, and bets no longer wait for one
+        last = "was approved" if anchor["approved"] else f"was not approved: {anchor['reason']}"
+        return [f"The market check is off: bets use the model's own probability, without first checking that it "
+                f"beats the market price on held-out markets. Its last fit ({str(anchor['fitted_at'])[:16]} UTC) "
+                f"{last}. See Market anchor below."]
+    if anchor["approved"]:
         return []
     if same_day and same_day["approved"]:
         return [f"Bets from the forecast model are paused: it has not yet beaten the market price on held-out "
@@ -109,13 +120,15 @@ def anchor_verdict(anchor: dict | None, same_day: dict | None = None) -> list[st
             f"{str(anchor['fitted_at'])[:16]} UTC: {anchor['reason']}). See Market anchor below."]
 
 
-def anchor_section(anchor: dict | None) -> list[str]:
+def anchor_section(anchor: dict | None, on: bool = True) -> list[str]:
     """The newest market-anchor fit (wxbot/calibration/anchor.py)."""
     if anchor is None:
         return []
-    out = ["", "## Market anchor (latest fit)", "",
-           "The bot bets only on the model combined with the market price, and only while that combination beats "
-           "the market price alone on resolved markets it was not fitted on.", "",
+    intro = ("The bot bets only on the model combined with the market price, and only while that combination beats "
+             "the market price alone on resolved markets it was not fitted on." if on else
+             "The market check is off ([market_anchor] enabled = false): the bot bets on the model's own "
+             "probability, and the anchor is no longer refitted. This is its last fit, from before it was turned off.")
+    out = ["", "## Market anchor (latest fit)" if on else "## Market anchor (off, last fit)", "", intro, "",
            f"Fitted {str(anchor['fitted_at'])[:16]} UTC on {anchor['n']} resolved markets with a tight book "
            f"({anchor['n_train']} to fit, the newest {anchor['n_holdout']} to judge): "
            f"**{'approved' if anchor['approved'] else 'not approved'}**, {anchor['reason']}."]
@@ -147,15 +160,16 @@ def same_day_scores(rows: list[tuple]) -> list[dict]:
     return out
 
 
-def same_day_section(same: dict | None) -> list[str]:
+def same_day_section(same: dict | None, on: bool = True) -> list[str]:
     """The same-day model's forward test (wxbot/model/nowcast.py)."""
     if not same or (not same["scores"][-1]["n"] and same["anchor"] is None):
         return []
     out = ["", "## Same-day model (forward test)", "",
            "On each market's own day the same-day model prices every bucket from the station's reports so far and "
            "the newest hourly forecast. It is scored here against the market's mid price at the same moment, on "
-           "resolved markets whose book was tight then (lower is better). It can bet only once its own market "
-           "anchor beats the market price on held-out markets.", "",
+           "resolved markets whose book was tight then (lower is better). "
+           + ("It can bet only once its own market anchor beats the market price on held-out markets." if on else
+              "With the market check off it does not bet."), "",
            "| Hours left | Predictions | Markets | Log loss: model / market | Brier: model / market |",
            "|---|---:|---:|---|---|"]
     out += [f"| {r['hours_left']} | {r['n']} | {r['markets']} | {_num(r['log_loss_model'])} / "
@@ -163,7 +177,7 @@ def same_day_section(same: dict | None) -> list[str]:
             for r in same["scores"] if r["n"]]
     a = same["anchor"]
     if a is not None:
-        out += ["", f"Latest anchor fit {str(a['fitted_at'])[:16]} UTC on {a['n']} markets "
+        out += ["", f"{'Latest' if on else 'Last'} anchor fit {str(a['fitted_at'])[:16]} UTC on {a['n']} markets "
                 f"({a['n_train']} to fit, the newest {a['n_holdout']} to judge): "
                 f"**{'approved' if a['approved'] else 'not approved'}**, {a['reason']}."]
     return out
@@ -295,8 +309,9 @@ def to_markdown(rep: dict) -> str:
                   f"{_num(c['log_loss_before'])} → {_num(c['log_loss_after'])} | "
                   f"{'yes' if c['approved'] else 'no: ' + (c['reason'] or '')} | {'yes' if c['selected'] else ''} |"
                   for c in cals]
-    lines += anchor_section(rep.get("market_anchor"))
-    lines += same_day_section(rep.get("same_day"))
+    on = rep.get("market_anchor_on", True)
+    lines += anchor_section(rep.get("market_anchor"), on)
+    lines += same_day_section(rep.get("same_day"), on)
     lines += model_updates(rep.get("model_updates"))
     comp = rep.get("model_comparison")
     if comp:
