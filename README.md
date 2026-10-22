@@ -244,8 +244,9 @@ five-model mean) to 0.81 °C. Against the market it is still the weaker
 forecast: on 16,099 resolved markets with tight books, its log loss was higher
 than the mid price's at every lead, and the US National Weather Service's own
 guidance (NBM and GFS MOS) did worse still. Like every production model it can
-bet only through the [market anchor](#market-anchor), so only once it has
-beaten the market price on markets it was not fitted on.
+bet only through the [market anchor](#market-anchor) while that is on (the
+default), so only once it has beaten the market price on markets it was not
+fitted on. Experiment 3 has run with it off since 2026-10-22.
 
 Climatology needs past observations: `python main.py climatology --years 3`
 loads them from the IEM METAR archive (one request per station-year, about

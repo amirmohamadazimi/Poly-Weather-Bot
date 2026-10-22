@@ -208,7 +208,7 @@ def test_without_an_approved_anchor_no_bet_is_placed(on):
     assert eng.db.rows(select(paper_bets)) == []
     assert eng.db.one(select(system_events).where(system_events.c.component == "market_anchor"))
     assert eng.run_cycle()["market_anchor"] == {"skipped": True}     # refit at most every refit_hours
-    md = to_markdown(build_report(eng.db, on.bankroll.initial, NOW))
+    md = to_markdown(build_report(eng.db, on.bankroll.initial, NOW, cfg=on))
     assert "## Market anchor (latest fit)" in md and "New bets are paused" in md
 
 
@@ -267,3 +267,22 @@ def test_turned_off_after_fits_it_bets_on_the_model_and_the_report_says_so(cfg):
     md = to_markdown(rep)
     assert "## Market anchor (off, last fit)" in md and "no longer refitted" in md
     assert "## Market anchor (latest fit)" not in md and "The bot bets only on the model combined" not in md
+    events = [e["message"] for e in db.rows(select(system_events).where(system_events.c.component == "market_anchor"))]
+    assert events == ["market check off: bets use the model's own probability"]
+    # the database says what the bot did, whatever config the report is built with (a downloaded copy)
+    cfg._data["market_anchor"]["enabled"] = True
+    assert db.get_state("market_anchor_check") == "off"
+    assert any(v.startswith("The market check is off") for v in build_report(db, 100, NOW, cfg=cfg)["verdict"])
+    # turned back on: logged, refitted, and the report says bets are paused again
+    eng.run_cycle()
+    assert db.get_state("market_anchor_check") == "on"
+    assert db.one(select(system_events).where(system_events.c.message.like("market check on%")))
+    assert anchor_module.latest(db)["version"] != "anchor-old"
+    assert any(v.startswith("New bets are paused") for v in build_report(db, 100, NOW, cfg=cfg)["verdict"])
+
+
+def test_the_default_check_on_is_recorded_without_a_log_line(on):
+    eng = make_engine(on)
+    eng.run_cycle()
+    assert eng.db.get_state("market_anchor_check") == "on"
+    assert not eng.db.one(select(system_events).where(system_events.c.message.like("market check%")))

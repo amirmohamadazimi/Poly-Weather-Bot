@@ -33,8 +33,9 @@ def build_report(db: Database, initial: float, now: datetime | None = None, cfg=
     cal = prediction_calibration(db)
     anchor = market_anchor.latest(db)
     same_anchor = market_anchor.latest(db, market_anchor.SAME_DAY)
-    anchor_cfg = cfg.get("market_anchor")
-    anchor_on = bool(anchor_cfg and anchor_cfg.enabled)
+    # whether bets waited for the anchor: as the bot last ran (engine._record_anchor_check), else this config
+    check, anchor_cfg = db.get_state("market_anchor_check"), cfg.get("market_anchor")
+    anchor_on = check == "on" if check is not None else bool(anchor_cfg and anchor_cfg.enabled)
     same = {"scores": same_day_scores(market_anchor.nowcast_rows(db, cfg, now)), "anchor": same_anchor}
     return {"overview": ov, "prediction_calibration": cal, "model_comparison": model_comparison(db),
             "calibrators": latest_calibrators(db), "market_anchor": anchor, "market_anchor_on": anchor_on,

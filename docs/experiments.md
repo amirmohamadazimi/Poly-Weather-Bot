@@ -87,13 +87,17 @@
 * No bet in its first week: the anchor reached 300 markets on 2026-10-19 and
   was never approved (on 2026-10-21, 694 markets: model weight 0.06, holdout
   log loss 0.2568 with the model vs 0.2567 for the price alone). A replay of
-  the 265 bets it blocked: 152 settled, won 73.7% against 88.4% predicted and
-  75.5% implied by the prices, a loss of $9.22 at $2 each.
+  the forecast model's 229 bets it blocked (the first signal per market that
+  failed no other rule): 125 settled, won 74.4% against 88.1% predicted and
+  75.2% implied by the prices, a loss of $4.46 at $2 each. The same-day
+  model's own anchor blocked 36 more (27 settled, a loss of $4.76).
 * From 2026-10-22, by the owner's decision, it bets without the market check:
   the workflow sets `WXBOT_MARKET_ANCHOR__ENABLED=false`, so the rules use the
   model's calibrated probability, and the same-day model does not bet. The
   anchor is no longer refitted; REPORT.md says the check is off and shows its
-  last fit.
+  last fit. The switch is logged in `system_events`, and the database keeps
+  it (`bot_state` `market_anchor_check`), so a report rebuilt from a
+  downloaded copy says the same whatever the local config.
 * The workflow pins the starting bankroll ($100), the name `exp3-v3-100usd`
   and the length (30 days).
 * State: `wxbot.sqlite3.gz`, `REPORT.md` and `RESEARCH.md` on the

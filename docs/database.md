@@ -32,7 +32,7 @@ so the database records what was known at each moment.
 | `historical_forecasts` | model forecast for a station × day × kind × lead (market backtest) | source, lead_days (Previous Runs `previous_dayN`: from runs at least N × 24 h before each hour), model, value_c, fetched_at |
 | `backtest_predictions` | replayed decision: market × lead (market backtest) | run_id, decision_time, price_time (the price point used, never after the decision), market_prob, p_climatology, p_raw_forecast, p_model, p_calibrated, calibrator_version, n_models, mu_c, sigma_c, bias_c and bias_n (walk-forward station bias and the days it was fitted on), outcome, and the flat-stake decision: side, entry_price, decision (BET, NO_BET, HELD), reason, pnl_per_dollar |
 | `system_events` | log event (info and up) | level, component, message, details, code (from v2 M9: e.g. MODEL_RETRAINED, MODEL_DEPLOYED, MODEL_ROLLBACK, SIGNIFICANT_MODEL_ERROR, PAPER_BET_OPENED) |
-| `bot_state` | key | last cycle, markets monitored, loop status |
+| `bot_state` | key | last cycle, markets monitored, loop status, whether bets wait for the market anchor (`market_anchor_check`: on/off, as the last cycle ran) |
 
 `markets`, `model_versions` and `param_sets` are the only tables updated in
 place. Each discovery refreshes a market's descriptive fields, and a closed or
