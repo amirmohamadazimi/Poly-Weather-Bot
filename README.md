@@ -587,7 +587,9 @@ every 7–8 hours in practice. The repository is public, so Actions minutes are 
 `.github/workflows/paper-trading-v3.yml` runs experiment 3 ($100, from
 2026-10-15, with the v2 model) the same way, with its state on the
 `v3-paper-trade` branch. Since it started, experiments 1 and 2 open no new
-bets; their runs go on so their open bets settle.
+bets; their runs go on so their open bets settle. Since 2026-10-22 it bets
+without the market anchor (`WXBOT_MARKET_ANCHOR__ENABLED=false`), which had
+never approved the model ([docs/experiments.md](docs/experiments.md)).
 
 ## Running on a server (Phase 2)
 

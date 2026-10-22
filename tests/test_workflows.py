@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+from wxbot.config import load_config
+
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = ["paper-trading.yml", "paper-trading-100.yml", "paper-trading-v3.yml"]
 pytestmark = pytest.mark.skipif(not (shutil.which("git") and shutil.which("bash")), reason="needs git and bash")
@@ -22,6 +24,25 @@ def step_script(name: str, step: str) -> str:
             break
         body.append(line[10:])
     return "\n".join(body).strip() + "\n"
+
+
+def job_env(name: str) -> dict[str, str]:
+    """The job's `env:` block: {name: value}, quotes and comments removed."""
+    lines = (ROOT / ".github/workflows" / name).read_text().splitlines()
+    env = {}
+    for line in lines[lines.index("    env:") + 1:]:
+        if not line.startswith(" " * 6):
+            break
+        key, _, value = line.strip().partition(": ")
+        value = value.split("  #")[0].strip()
+        env[key] = value[1:-1] if len(value) > 1 and value[0] == value[-1] == '"' else value
+    return env
+
+
+def bot_config(name: str):
+    """config.toml with the workflow's WXBOT_ overrides (not its database path, which only CI can expand)."""
+    env = job_env(name)
+    return load_config(env={k: v for k, v in env.items() if k.startswith("WXBOT_") and k != "WXBOT_APP__DATABASE_URL"})
 
 
 def git(cwd: Path, *args: str) -> None:
@@ -104,3 +125,12 @@ def test_experiment_3_refuses_code_without_the_v2_model(tmp_path):
     old = subprocess.run(["bash", "-eo", "pipefail", "-c", guard], cwd=tmp_path, capture_output=True, text=True)
     assert old.returncode != 0 and "predates the v2 model" in old.stdout
     assert subprocess.run(["bash", "-eo", "pipefail", "-c", guard], cwd=ROOT).returncode == 0
+
+
+def test_experiment_3_bets_on_the_model_without_the_market_check():
+    cfg = bot_config("paper-trading-v3.yml")
+    assert cfg.app.mode == "paper" and cfg.bankroll.initial == 100.0 and cfg.experiment.name == "exp3-v3-100usd"
+    assert cfg.market_anchor.enabled is False
+    assert cfg.strategy.min_model_prob < 1                 # it can bet
+    # experiment 2 stays stopped: no probability reaches its threshold
+    assert bot_config("paper-trading-100.yml").strategy.min_model_prob > 1

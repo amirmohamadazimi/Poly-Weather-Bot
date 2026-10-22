@@ -247,3 +247,23 @@ def test_anchor_off_keeps_the_model_only_rules(cfg):
     assert sigs and all(_rule(s, "market_anchor") is None for s in sigs)
     assert all("anchored" not in s["rule_results"][0]["value"] for s in sigs)
     assert len(eng.db.rows(select(paper_bets))) == 1
+
+
+def test_turned_off_after_fits_it_bets_on_the_model_and_the_report_says_so(cfg):
+    db = Database(cfg.app.database_url)
+    db.insert(market_anchors, version="anchor-old", model_version=MODEL, fitted_at=NOW - timedelta(days=1), n=694,
+              n_train=486, n_holdout=208, params={"a": 0.06, "b": 1.06, "c": 0.11}, approved=False,
+              reason="the model adds nothing to the market price")
+    eng = make_engine(cfg, db=db)
+    assert eng.run_cycle()["market_anchor"] == {"enabled": False}
+    sigs = db.rows(select(signals))
+    assert sigs and all(_rule(s, "market_anchor") is None for s in sigs)
+    assert len(db.rows(select(paper_bets))) == 1                   # the unapproved fit no longer stops it
+    assert anchor_module.latest(db)["version"] == "anchor-old"     # and is not refitted while the check is off
+    rep = build_report(db, cfg.bankroll.initial, NOW, cfg=cfg)
+    assert not any("paused" in v for v in rep["verdict"])
+    assert any(v.startswith("The market check is off") and "was not approved: the model adds nothing" in v
+               for v in rep["verdict"])
+    md = to_markdown(rep)
+    assert "## Market anchor (off, last fit)" in md and "no longer refitted" in md
+    assert "## Market anchor (latest fit)" not in md and "The bot bets only on the model combined" not in md

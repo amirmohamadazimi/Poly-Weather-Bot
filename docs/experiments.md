@@ -79,11 +79,21 @@
 * Runs on GitHub Actions (`.github/workflows/paper-trading-v3.yml`) every 3
   hours, offset from the others, from the newest commit of `main` that passed
   CI, like experiment 2. It starts when that workflow reaches `main`.
-* Model: `weighted-multimodel-v1` (README "Production model"), betting only
-  through the market anchor, which starts with no fit for this model and so
+* Model: `weighted-multimodel-v1` (README "Production model"), at first betting
+  only through the market anchor, which starts with no fit for this model and so
   places no bet until it has 300 resolved tight-book markets to judge it on.
   `normal-multimodel-v1`, `raw-forecast-v1`, `climatology-v1` and the
   same-day model are scored next to it as shadows.
+* No bet in its first week: the anchor reached 300 markets on 2026-10-19 and
+  was never approved (on 2026-10-21, 694 markets: model weight 0.06, holdout
+  log loss 0.2568 with the model vs 0.2567 for the price alone). A replay of
+  the 265 bets it blocked: 152 settled, won 73.7% against 88.4% predicted and
+  75.5% implied by the prices, a loss of $9.22 at $2 each.
+* From 2026-10-22, by the owner's decision, it bets without the market check:
+  the workflow sets `WXBOT_MARKET_ANCHOR__ENABLED=false`, so the rules use the
+  model's calibrated probability, and the same-day model does not bet. The
+  anchor is no longer refitted; REPORT.md says the check is off and shows its
+  last fit.
 * The workflow pins the starting bankroll ($100), the name `exp3-v3-100usd`
   and the length (30 days).
 * State: `wxbot.sqlite3.gz`, `REPORT.md` and `RESEARCH.md` on the
