@@ -1,0 +1,62 @@
+{
+  "markets": {
+    "seen": 3102,
+    "tradeable": 0
+  },
+  "forecasts": {
+    "stations": 0,
+    "snapshots": 0
+  },
+  "reports": {
+    "stations": 0,
+    "new_reports": 0
+  },
+  "model_stats": {
+    "enabled": false
+  },
+  "calibration": {
+    "n": 1474,
+    "using": "identity"
+  },
+  "market_anchor": {
+    "skipped": true
+  },
+  "signals": {
+    "predictions": 0,
+    "shadow_predictions": 0,
+    "bets": 0
+  },
+  "settlement": {
+    "checked": 500,
+    "bets_settled": 0,
+    "price_histories": 300
+  },
+  "experiment": {
+    "state": "running",
+    "day": 30,
+    "planned_days": 30,
+    "ends_at": "2026-10-31T21:48:19.113159+00:00",
+    "open_bets": 0,
+    "ended_at": null,
+    "completed_at": null
+  },
+  "observations": {
+    "stations": 0,
+    "new_rows": 0
+  },
+  "learning": {
+    "outcomes": {
+      "recorded": 0
+    },
+    "rollback": {
+      "monitoring": "bias-sigma-20261020T011335-90d",
+      "markets": 1232,
+      "kept": true
+    },
+    "retrain": {
+      "skipped": "not due",
+      "next": "2026-11-03T01:37:31.938150+00:00"
+    }
+  },
+  "seconds": 152.9
+}
