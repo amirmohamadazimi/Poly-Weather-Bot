@@ -1,0 +1,23 @@
+{
+  "markets": {
+    "seen": 3003,
+    "tradeable": 0
+  },
+  "forecasts": {
+    "stations": 0,
+    "snapshots": 0
+  },
+  "signals": {
+    "predictions": 0,
+    "bets": 0
+  },
+  "settlement": {
+    "checked": 0,
+    "bets_settled": 0
+  },
+  "observations": {
+    "stations": 0,
+    "new_rows": 0
+  },
+  "seconds": 3.9
+}
