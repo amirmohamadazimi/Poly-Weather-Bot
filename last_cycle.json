@@ -1,0 +1,67 @@
+{
+  "markets": {
+    "seen": 2365,
+    "tradeable": 0
+  },
+  "forecasts": {
+    "stations": 0,
+    "snapshots": 0
+  },
+  "reports": {
+    "stations": 0,
+    "new_reports": 0
+  },
+  "model_stats": {
+    "at": "2026-11-28T18:59:51.356162+00:00",
+    "retry": false,
+    "stations": 32,
+    "rows": 192,
+    "failed": {
+      "ZSJN": "no usable data: too few days with both forecasts and observations"
+    },
+    "days": 120,
+    "loaded": 192
+  },
+  "calibration": {
+    "n": 4059,
+    "using": "identity"
+  },
+  "market_anchor": {
+    "enabled": false
+  },
+  "signals": {
+    "predictions": 0,
+    "shadow_predictions": 0,
+    "bets": 0
+  },
+  "settlement": {
+    "checked": 22,
+    "bets_settled": 0,
+    "price_histories": 300
+  },
+  "experiment": {
+    "state": "complete",
+    "day": 30,
+    "planned_days": 30,
+    "ends_at": "2026-11-14T18:50:42.284968+00:00",
+    "open_bets": 0,
+    "ended_at": "2026-11-14T21:36:29.668433+00:00",
+    "completed_at": "2026-11-14T21:36:29.668433+00:00"
+  },
+  "observations": {
+    "stations": 0,
+    "new_rows": 0
+  },
+  "learning": {
+    "outcomes": {
+      "recorded": 0
+    },
+    "rollback": {
+      "skipped": "the production model (weighted-multimodel) refits its own biases daily (wxbot/learning/model_stats.py), so the station bias/spread sets are not retrained"
+    },
+    "retrain": {
+      "skipped": "the production model (weighted-multimodel) refits its own biases daily (wxbot/learning/model_stats.py), so the station bias/spread sets are not retrained"
+    }
+  },
+  "seconds": 203.9
+}
